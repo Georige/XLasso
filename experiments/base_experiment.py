@@ -1,5 +1,5 @@
 """
-Base experiment class for all UniLasso simulation experiments.
+Base experiment class for all XLasso simulation experiments.
 Provides common infrastructure:
 - Data splitting
 - Repeated experiments
@@ -309,7 +309,7 @@ def compute_variable_selection_metrics(
 
 def compute_group_accuracy(
     selected: np.ndarray,
-    groups: Dict[int, List[int]],
+    groups: List[List[int]],
     true_nonzero: np.ndarray
 ) -> float:
     """
@@ -321,8 +321,8 @@ def compute_group_accuracy(
     ----------
     selected : np.ndarray
         Selected features (boolean).
-    groups : Dict[int, List[int]]
-        Group mapping: group_id -> list of feature indices.
+    groups : List[List[int]]
+        List of groups, each group is a list of feature indices.
     true_nonzero : np.ndarray
         True nonzero features.
 
@@ -334,7 +334,7 @@ def compute_group_accuracy(
     correct = 0
     total = 0
 
-    for group_id, feature_indices in groups.items():
+    for feature_indices in groups:
         feature_indices = np.array(feature_indices)
         # Does this group contain any true nonzero features?
         has_true = np.any(true_nonzero[feature_indices])

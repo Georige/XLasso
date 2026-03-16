@@ -1,9 +1,9 @@
 """
-UniLasso Simulation Experiments Package
+XLasso Simulation Experiments Package
 ========================================
 
 This package contains the experiment framework for systematically evaluating
-the UniLasso algorithm with:
+the XLasso algorithm with:
 - Group constraint (promoting grouped selection of correlated features)
 - Adaptive weighting (penalty adjustment based on univariate significance)
 

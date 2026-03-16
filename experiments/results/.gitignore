@@ -1,0 +1,5 @@
+# Ignore all generated result files
+*.csv
+*.png
+*.pdf
+*.tex
