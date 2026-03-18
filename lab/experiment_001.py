@@ -250,6 +250,8 @@ if __name__ == "__main__":
                         help="XLasso alpha参数（显著变量负惩罚强度），默认值：1.0")
     parser.add_argument("--beta", type=float, default=1.0,
                         help="XLasso beta参数（不显著变量惩罚强度），默认值：1.0")
+    parser.add_argument("--lmda-min-ratio", type=float, default=1e-4,
+                        help="正则化路径最小lambda比例，默认值：1e-4")
 
     args = parser.parse_args()
 
@@ -269,7 +271,8 @@ if __name__ == "__main__":
                 "beta": args.beta,
                 "group_penalty": args.group_penalty,
                 "corr_threshold": args.corr_threshold,
-                "weight_method": args.weight_method
+                "weight_method": args.weight_method,
+                "lmda_min_ratio": args.lmda_min_ratio
             })
 
     # 打印配置信息

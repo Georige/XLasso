@@ -1527,6 +1527,8 @@ def cv_uni(
             n_lmdas=n_lmdas,
             lmda_min_ratio=lmda_min_ratio
         )
+        # 放大lambda 100倍，与adelie grpnet的正则化尺度对齐
+        lambda_path *= 100.0
 
     # 5. 交叉验证过程
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)

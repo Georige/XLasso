@@ -400,6 +400,8 @@ def _fit_numba_lasso_path_accelerated(
             weights = w_prox
             bias = bias_new
 
+        # 调试：打印权重的最大绝对值
+        # print(f"Lambda {lmda:.6f}: max weight = {np.max(np.abs(weights)):.6f}, n_nonzero = {np.sum(np.abs(weights) > 1e-8)}")
         betas_matrix[i, :] = weights
         intercepts[i] = bias
 
