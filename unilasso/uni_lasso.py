@@ -1166,7 +1166,9 @@ def _fit_pytorch_lasso_path(
 X_train: np.ndarray,
 y_train: np.ndarray,
 lmdas: np.ndarray,
-negative_penalty: float,
+alpha: float = 1.0,
+beta: float = 1.0,
+negative_penalty: float = 0.0,
 fit_intercept: bool = True,
 lr: float = 0.01,
 max_epochs: int = 5000,
@@ -1187,18 +1189,23 @@ momentum: float = 0.0
 
     Parameters
     ----------
+    alpha : float
+        XLasso parameter: penalty coefficient for the $\frac{1}{w_j}$ term
+        For significant variables (small w_j), this increases penalty on negative coefficients
+    beta : float
+        XLasso parameter: penalty coefficient for the $w_j$ term
+        For insignificant variables (large w_j), this increases penalty on both signs
     negative_penalty : float
-        对负系数的额外惩罚强度。当 negative_penalty -> inf 时，
-        模型趋近于硬约束 theta >= 0（但不完全等价）。
-        当 negative_penalty = 0 时，退化为标准 Lasso。
+        Backward compatibility: Additional penalty strength for negative coefficients
+        (used when alpha=0, this reduces to the old simplified form)
     feature_weights : np.ndarray, optional
-        特征级显著性权重，默认全为 1
+        Feature-level significance weights w_j, default all ones
     group_signs : np.ndarray, optional
-        每个特征所在组的主导符号，默认全为 1
+        Dominant sign for each feature's group, default all ones
     group_penalty : float
-        全局组惩罚强度，用于符号不一致惩罚
+        Global group penalty strength for sign inconsistency
     group_weights : np.ndarray, optional
-        组级惩罚权重，默认全为 1
+        Group-level penalty weights, default all ones
     """
     X_t = torch.tensor(X_train, dtype=torch.float32)
     y_t = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
@@ -1278,6 +1285,7 @@ momentum: float = 0.0
             optimizer.step()
 
             # 第二步：双层非对称近端算子 (Double Asymmetric Proximal Operator)
+            # XLasso paper: w_j^+ = lambda * w_j, w_j^- = lambda * (alpha / w_j + beta * w_j)
             with torch.no_grad():
                 w_new = torch.zeros_like(weights)
 
@@ -1287,9 +1295,14 @@ momentum: float = 0.0
                     gs = gs_t[j]
                     gw = gw_t[j]
 
-                    # Compute base thresholds (feature adaptive)
+                    # Compute base thresholds (feature adaptive - XLasso original formula)
+                    fw_safe = max(fw.item(), 1e-10)  # Avoid division by zero
                     tau_pos_base = lr * lmda * fw
-                    tau_neg_base = lr * (lmda + negative_penalty) * fw
+                    tau_neg_base = lr * lmda * (alpha / fw_safe + beta * fw)
+
+                    # Add legacy negative_penalty for backward compatibility
+                    if negative_penalty > 0:
+                        tau_neg_base += lr * negative_penalty * fw
 
                     # Compute group penalty adjustment
                     if gs > 0:
@@ -1338,7 +1351,9 @@ def cv_uni(
     lmdas: Optional[np.ndarray] = None,
     n_lmdas: int = 100,
     lmda_min_ratio: Optional[float] = None,
-    negative_penalty: float = 10.0,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    negative_penalty: float = 0.0,
     verbose: bool = False,
     seed: Optional[int] = None,
     backend: str = "numba",
@@ -1369,6 +1384,17 @@ def cv_uni(
     family : str, optional
         GLM家族: 'gaussian' (线性回归), 'binomial' (二分类),
         'multinomial' (多分类), 'poisson' (泊松回归), 'cox' (生存分析)
+    alpha : float, optional
+        XLasso parameter: penalty coefficient for the $\frac{1}{w_j}$ term
+        For significant variables (small w_j), this increases penalty on negative coefficients
+        Default: 1.0
+    beta : float, optional
+        XLasso parameter: penalty coefficient for the $w_j$ term
+        For insignificant variables (large w_j), this increases penalty on both signs
+        Default: 1.0
+    negative_penalty : float, optional
+        Backward compatibility: Additional penalty strength for negative coefficients
+        (used when alpha=0, this reduces to the old simplified form). Default: 0.0
     backend : str, optional
         Solver backend to use: 'numba' (default, fast) or 'pytorch' (original).
     adaptive_weighting : bool, optional
@@ -1511,7 +1537,7 @@ def cv_uni(
         y_train, y_val = y[train_idx], y[val_idx]
 
         b_mat, int_arr = _fit_lasso_path(
-            X_train, y_train, lambda_path, negative_penalty, fit_intercept,
+            X_train, y_train, lambda_path, alpha, beta, negative_penalty, fit_intercept,
             lr=lr,
             feature_weights=feature_weights,
             group_signs=group_signs,
@@ -1548,7 +1574,7 @@ def cv_uni(
 
     # 6. 在全量 LOO 特征上进行最终拟合
     final_betas, final_intercepts = _fit_lasso_path(
-        loo_fits, y, lambda_path, negative_penalty, fit_intercept,
+        loo_fits, y, lambda_path, alpha, beta, negative_penalty, fit_intercept,
         lr=lr,
         feature_weights=feature_weights,
         group_signs=group_signs,
@@ -1621,7 +1647,9 @@ def fit_uni(
     lmdas: Optional[Union[float, List[float], np.ndarray]] = None,
     n_lmdas: Optional[int] = 100,
     lmda_min_ratio: Optional[float] = 1e-2,
-    negative_penalty: float = 10.0,  # 创新点：暴露软惩罚参数
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    negative_penalty: float = 0.0,  # Backward compatibility: additional penalty on negative coefficients
     verbose: bool = False,
     backend: str = "numba",
     lr: Optional[float] = None,
@@ -1648,11 +1676,26 @@ def fit_uni(
     在指定的正则化路径上拟合模型，支持对负系数的自定义软惩罚、
     特征级自适应惩罚、组级符号一致性约束以及非线性单变量模型。
 
+    This implementation matches the XLasso paper:
+    $w_j^+ = \lambda \cdot w_j$, $w_j^- = \lambda \cdot (\frac{\alpha}{w_j} + \beta \cdot w_j)$
+    where $w_j = \frac{1}{-\log(p_j + \epsilon)}$ is the significance weight.
+
     Parameters
     ----------
     family : str, optional
         GLM家族: 'gaussian' (线性回归), 'binomial' (二分类),
         'multinomial' (多分类), 'poisson' (泊松回归), 'cox' (生存分析)
+    alpha : float, optional
+        XLasso parameter: penalty coefficient for the $\frac{1}{w_j}$ term
+        For significant variables (small w_j), this increases penalty on negative coefficients
+        Default: 1.0
+    beta : float, optional
+        XLasso parameter: penalty coefficient for the $w_j$ term
+        For insignificant variables (large w_j), this increases penalty on both signs
+        Default: 1.0
+    negative_penalty : float, optional
+        Backward compatibility: Additional penalty strength for negative coefficients
+        (used when alpha=0, this reduces to the old simplified form). Default: 0.0
     backend : str, optional
         Solver backend to use: 'numba' (default, fast) or 'pytorch' (original).
     adaptive_weighting : bool, optional
@@ -1745,16 +1788,53 @@ def fit_uni(
 
     if adaptive_weighting or enable_group_constraint:
         # 构建单变量结果字典
+        # Try to compute real t-statistics and p-values for Gaussian linear regression
         univariate_results = {
             'beta': beta_coefs_fit,
-            't_stats': np.ones_like(beta_coefs_fit),  # 占位
-            'p_values': np.ones_like(beta_coefs_fit),  # 占位
-            'correlations': np.zeros_like(beta_coefs_fit)  # 占位
+            't_stats': np.ones_like(beta_coefs_fit),
+            'p_values': np.ones_like(beta_coefs_fit),
+            'correlations': np.zeros_like(beta_coefs_fit)
         }
 
-        # 计算特征相关性
+        n, p = X.shape
+        # Compute marginal correlations with y
         if X.shape[1] > 0:
-            univariate_results['correlations'] = np.corrcoef(X.T, y)[0, 1:] if X.shape[1] > 1 else np.array([np.corrcoef(X[:, 0], y)[0, 1]])
+            if X.shape[1] > 1:
+                univariate_results['correlations'] = np.corrcoef(X.T, y)[0, 1:]
+            else:
+                univariate_results['correlations'] = np.array([np.corrcoef(X[:, 0], y)[0, 1]])
+
+        # Compute t-statistics for Gaussian linear case
+        if family == "gaussian" and univariate_model == "linear":
+            # For each feature, compute t-statistic: beta / se(beta)
+            y_mean = np.mean(y)
+            y_ss = np.sum((y - y_mean) ** 2)
+            for j in range(p):
+                beta_j = beta_coefs_fit[j]
+                if beta_j != 0:
+                    x_j = X[:, j]
+                    x_mean_j = np.mean(x_j)
+                    ss_xj = np.sum((x_j - x_mean_j) ** 2)
+                    if ss_xj > 1e-10:
+                        # R-squared for this univariate model
+                        r2 = beta_j ** 2 * ss_xj / y_ss if y_ss > 0 else 0
+                        # Residual variance estimate
+                        df_resid = n - 2
+                        mse = y_ss * (1 - r2) / df_resid if df_resid > 0 else 0
+                        # Standard error of beta
+                        se_beta = np.sqrt(mse / ss_xj)
+                        # t-statistic
+                        t_j = beta_j / se_beta if se_beta > 0 else 0
+                        univariate_results['t_stats'][j] = np.abs(t_j)
+                        # Two-tailed p-value (approximate using normal distribution)
+                        # We'll leave p_values for computation in _compute_feature_significance_weights
+                        # but fill with 1/(1 + |t_j|) as an approximation of p-value
+                        import scipy.stats
+                        if abs(t_j) < 10:
+                            p_j = 2 * (1 - scipy.stats.norm.cdf(abs(t_j)))
+                        else:
+                            p_j = 1e-10  # Approximation for large t
+                        univariate_results['p_values'][j] = p_j
 
     if adaptive_weighting:
         feature_weights = _compute_feature_significance_weights(
@@ -1788,6 +1868,8 @@ def fit_uni(
         X_train=loo_fits,
         y_train=y,
         lmdas=lambda_path,
+        alpha=alpha,
+        beta=beta,
         negative_penalty=negative_penalty,
         fit_intercept=fit_intercept,
         lr=lr,

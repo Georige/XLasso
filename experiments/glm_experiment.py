@@ -263,9 +263,24 @@ class GLMExperiment(BaseSimulationExperiment):
             selected = coef != 0
             true_nonzero = beta_true != 0
         else:
+            # Multinomial: handle different shapes
+            if coef.ndim == 1 and beta_true.ndim == 2:
+                # beta_true is (p, K), check if coef size matches p or p*K
+                K = beta_true.shape[1]
+                p = beta_true.shape[0]
+                if coef.size == p * K:
+                    coef = coef.reshape(p, K)
+                # else: if size is already p, keep as 1D - this means model
+                # has different parameterization than we thought
             # Multinomial: feature is selected if any coefficient is non-zero
-            selected = np.any(coef != 0, axis=1)
-            true_nonzero = np.any(beta_true != 0, axis=1)
+            if coef.ndim == 1:
+                selected = coef != 0
+            else:
+                selected = np.any(coef != 0, axis=1)
+            if beta_true.ndim == 1:
+                true_nonzero = beta_true != 0
+            else:
+                true_nonzero = np.any(beta_true != 0, axis=1)
 
         # Variable selection metrics
         vs_metrics = compute_variable_selection_metrics(selected, true_nonzero)
@@ -323,15 +338,24 @@ class GLMExperiment(BaseSimulationExperiment):
             # Compute probabilities manually
             eta = X_test @ coef + intercept
             # Softmax with numerical stability
-            eta = eta - np.max(eta, axis=1, keepdims=True)
-            exp_eta = np.exp(eta)
-            y_pred_proba = exp_eta / np.sum(exp_eta, axis=1, keepdims=True)
-            y_pred = np.argmax(y_pred_proba, axis=1)
+            if eta.ndim > 1 and eta.shape[1] > 1:
+                eta = eta - np.max(eta, axis=1, keepdims=True)
+                exp_eta = np.exp(eta)
+                y_pred_proba = exp_eta / np.sum(exp_eta, axis=1, keepdims=True)
+                y_pred = np.argmax(y_pred_proba, axis=1)
+            else:
+                # Binary case or single dimension case
+                y_pred_proba = 1 / (1 + np.exp(-eta))
+                y_pred = (y_pred_proba >= 0.5).astype(int)
+                y_pred_proba = np.column_stack([1 - y_pred_proba, y_pred_proba])
             accuracy = np.mean(y_pred == y_test)
             # Multi-class AUC (one-vs-rest)
             from sklearn.metrics import roc_auc_score
             try:
-                auc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr')
+                if len(np.unique(y_test)) > 2:
+                    auc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr')
+                else:
+                    auc = roc_auc_score(y_test, y_pred_proba[:, 1])
             except:
                 auc = np.nan
             metrics['accuracy'] = accuracy

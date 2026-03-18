@@ -90,7 +90,9 @@ def _fit_numba_lasso_path(
     X_train: np.ndarray,
     y_train: np.ndarray,
     lmdas: np.ndarray,
-    negative_penalty: float,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    negative_penalty: float = 0.0,
     fit_intercept: bool = True,
     lr: float = 0.01,
     max_epochs: int = 5000,
@@ -116,8 +118,15 @@ def _fit_numba_lasso_path(
         Target values of shape (n_samples,)
     lmdas : np.ndarray
         Regularization path, sorted in descending order for warm start
+    alpha : float
+        XLasso parameter: penalty coefficient for the $\frac{1}{w_j}$ term
+        For significant variables (small w_j), this increases penalty on negative coefficients
+    beta : float
+        XLasso parameter: penalty coefficient for the $w_j$ term
+        For insignificant variables (large w_j), this increases penalty on both signs
     negative_penalty : float
-        Additional penalty strength for negative coefficients
+        Backward compatibility: Additional penalty strength for negative coefficients
+        (used when alpha=0, this reduces to the old simplified form)
     fit_intercept : bool
         Whether to fit an intercept term
     lr : float
@@ -127,7 +136,7 @@ def _fit_numba_lasso_path(
     tol : float
         Convergence tolerance
     feature_weights : np.ndarray, optional
-        Feature-level significance weights of shape (n_features,), defaults to all ones
+        Feature-level significance weights w_j of shape (n_features,), defaults to all ones
     group_signs : np.ndarray, optional
         Dominant sign for each feature's group of shape (n_features,), defaults to all ones
     group_penalty : float
@@ -193,7 +202,7 @@ def _fit_numba_lasso_path(
             weights_gd = weights + v_weights
             bias_gd = bias + v_bias
 
-            # Step 2: Double asymmetric proximal operator
+            # Step 2: Double asymmetric proximal operator (XLasso original formula)
             w_prox = np.zeros_like(weights_gd)
 
             for j in range(n_features):
@@ -203,8 +212,14 @@ def _fit_numba_lasso_path(
                 gw = group_weights[j]
 
                 # Compute base thresholds (feature adaptive)
+                # XLasso paper: w_j^+ = lambda * w_j, w_j^- = lambda * (alpha / w_j + beta * w_j)
+                fw_safe = max(fw, 1e-10)  # Avoid division by zero
                 tau_pos_base = lr * lmda * fw
-                tau_neg_base = lr * (lmda + negative_penalty) * fw
+                tau_neg_base = lr * lmda * (alpha / fw_safe + beta * fw)
+
+                # Add legacy negative_penalty for backward compatibility
+                if negative_penalty > 0:
+                    tau_neg_base += lr * negative_penalty * fw
 
                 # Compute group penalty adjustment
                 if gs > 0:
@@ -251,7 +266,9 @@ def _fit_numba_lasso_path_accelerated(
     X_train: np.ndarray,
     y_train: np.ndarray,
     lmdas: np.ndarray,
-    negative_penalty: float,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    negative_penalty: float = 0.0,
     fit_intercept: bool = True,
     lr: float = 0.01,
     max_epochs: int = 5000,
@@ -273,7 +290,7 @@ def _fit_numba_lasso_path_accelerated(
     if family != "gaussian":
         # For non-Gaussian, use the regular version
         return _fit_numba_lasso_path(
-            X_train, y_train, lmdas, negative_penalty, fit_intercept,
+            X_train, y_train, lmdas, alpha, beta, negative_penalty, fit_intercept,
             lr, max_epochs, tol, feature_weights, group_signs,
             group_penalty, group_weights, family, momentum
         )
@@ -332,7 +349,7 @@ def _fit_numba_lasso_path_accelerated(
             weights_new = weights + v_weights
             bias_new = bias + v_bias
 
-            # Double asymmetric proximal operator
+            # Double asymmetric proximal operator (XLasso original formula)
             w_prox = np.zeros_like(weights_new)
 
             for j in range(n_features):
@@ -342,8 +359,14 @@ def _fit_numba_lasso_path_accelerated(
                 gw = group_weights[j]
 
                 # Compute base thresholds (feature adaptive)
+                # XLasso paper: w_j^+ = lambda * w_j, w_j^- = lambda * (alpha / w_j + beta * w_j)
+                fw_safe = max(fw, 1e-10)  # Avoid division by zero
                 tau_pos_base = lr * lmda * fw
-                tau_neg_base = lr * (lmda + negative_penalty) * fw
+                tau_neg_base = lr * lmda * (alpha / fw_safe + beta * fw)
+
+                # Add legacy negative_penalty for backward compatibility
+                if negative_penalty > 0:
+                    tau_neg_base += lr * negative_penalty * fw
 
                 # Compute group penalty adjustment
                 if gs > 0:
