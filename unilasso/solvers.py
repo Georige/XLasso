@@ -175,8 +175,10 @@ def _fit_numba_lasso_path(
     for j in range(n_features):
         fw = feature_weights[j]
         fw_safe = max(fw, 1e-10)
-        w_plus = fw
-        w_minus = alpha / fw_safe + beta * fw
+        # 方案A：fw是与显著性正相关的权重（越显著，fw越大）
+        # 惩罚权重 = 系数 / fw，这样显著变量的惩罚更轻
+        w_plus = 1.0 / fw_safe
+        w_minus = (alpha + beta) / fw_safe
         w_plus_norm[j] = w_plus
         w_minus_norm[j] = w_minus
         S_plus += w_plus
@@ -338,8 +340,10 @@ def _fit_numba_lasso_path_coordinate_descent(
     for j in range(n_features):
         fw = feature_weights[j]
         fw_safe = max(fw, 1e-10)
-        w_plus = fw
-        w_minus = alpha / fw_safe + beta * fw
+        # 方案A：fw是与显著性正相关的权重（越显著，fw越大）
+        # 惩罚权重 = 系数 / fw，这样显著变量的惩罚更轻
+        w_plus = 1.0 / fw_safe
+        w_minus = (alpha + beta) / fw_safe
         w_plus_norm[j] = w_plus
         w_minus_norm[j] = w_minus
         S_plus += w_plus
@@ -374,7 +378,7 @@ def _fit_numba_lasso_path_coordinate_descent(
 
             # Add negative penalty
             if negative_penalty > 0:
-                tau_neg_base += negative_penalty * fw
+                tau_neg_base += negative_penalty * feature_weights[j]
 
             # Add group penalty
             if gs > 0:
