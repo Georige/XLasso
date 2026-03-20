@@ -1523,8 +1523,57 @@ def cv_uni(
     if original_lmdas is not None:
         lambda_path = np.sort(np.array(original_lmdas))[::-1]
     else:
-        # 针对LOO矩阵固定lambda范围，手动验证过最优区间在0.001~0.1之间
-        lambda_path = np.exp(np.linspace(np.log(0.1), np.log(0.001), n_lmdas))
+        n_samples, n_features = loo_fits.shape
+        p = n_features
+
+        # 中心化数据，计算X^T y
+        X_center = loo_fits - np.mean(loo_fits, axis=0)
+        y_center = y - np.mean(y)
+        Xty = X_center.T @ y_center / n_samples  # 每个特征的相关系数
+
+        # 预计算标准化后的w_plus和w_minus（和solver中的逻辑完全一致）
+        w_plus = np.zeros(n_features)
+        w_minus = np.zeros(n_features)
+        S_plus = 0.0
+        S_minus = 0.0
+
+        for j in range(n_features):
+            fw = feature_weights[j]
+            fw_safe = max(fw, 1e-10)
+            wp = fw
+            wm = alpha / fw_safe + beta * fw
+            w_plus[j] = wp
+            w_minus[j] = wm
+            S_plus += wp
+            S_minus += wm
+
+        # 标准化并乘以p
+        S_plus_safe = max(S_plus, 1e-10)
+        S_minus_safe = max(S_minus, 1e-10)
+        for j in range(n_features):
+            w_plus[j] = (w_plus[j] / S_plus_safe) * p
+            w_minus[j] = (w_minus[j] / S_minus_safe) * p
+
+        # 按照非对称Lasso公式计算lambda_max（修正版）
+        # 对每个特征j，根据c_j = X_LOO_j^T y /n 的符号选择对应的权重
+        # c_j > 0: lambda_req = c_j / w_j^+ （正系数需要的最小惩罚）
+        # c_j < 0: lambda_req = -c_j / w_j^- （负系数需要的最小惩罚）
+        # lambda_max是所有lambda_req的最大值，刚好让所有系数为0
+        lambda_max = 0.0
+        for j in range(n_features):
+            c_j = Xty[j]
+            if c_j > 0:
+                req = c_j / max(w_plus[j], 1e-10)
+            elif c_j < 0:
+                req = (-c_j) / max(w_minus[j], 1e-10)
+            else:
+                req = 0.0
+            if req > lambda_max:
+                lambda_max = req
+
+        # 生成lambda路径
+        lambda_min = lambda_max * lmda_min_ratio
+        lambda_path = np.exp(np.linspace(np.log(lambda_max), np.log(lambda_min), n_lmdas))
 
         if not (backend == "numba" and 'accelerated' in str(_fit_lasso_path)):
             # 梯度下降需要放大100倍匹配lr尺度
@@ -1841,6 +1890,8 @@ def fit_uni(
                             p_j = 2 * (1 - scipy.stats.norm.cdf(abs(t_j)))
                         else:
                             p_j = 1e-10  # Approximation for large t
+                        # 对p值做安全截断，防止极端值
+                        p_j = np.clip(p_j, 1e-4, 0.95)
                         univariate_results['p_values'][j] = p_j
 
     if adaptive_weighting:

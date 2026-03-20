@@ -145,6 +145,52 @@ def generate_experiment4(n: int = 100, sigma: float = 0.5) -> Tuple[np.ndarray, 
     return X, y, true_beta
 
 
+def generate_twin_variable_experiment(n: int = 300, p: int = 1000, rho: float = 0.85,
+                                      sigma: float = 1.0, snr: float = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    降维打击场景：10对高度相关的孪生变量，每对内部符号相反、负效应更强
+
+    Args:
+        n: 样本量，默认300
+        p: 特征数，默认1000
+        rho: 孪生变量对内部相关系数，默认0.85
+        sigma: 噪声标准差，如果指定snr则忽略此参数
+        snr: 信噪比，如果指定则自动计算sigma
+
+    Returns:
+        X: 设计矩阵 (n, p)
+        y: 响应变量 (n,)
+        true_beta: 真实系数 (p,)
+    """
+    # 生成基础变量
+    X = np.random.randn(n, p)
+
+    # 前20个变量组成10对孪生变量
+    for i in range(0, 20, 2):
+        # 每对共享基础信号
+        common = np.random.randn(n)
+        # 第一个变量：common + 噪声
+        X[:, i] = common * np.sqrt(rho) + np.random.randn(n) * np.sqrt(1 - rho)
+        # 第二个变量：common + 噪声，保证和第一个变量的相关系数为rho
+        X[:, i+1] = common * np.sqrt(rho) + np.random.randn(n) * np.sqrt(1 - rho)
+
+    # 真实系数：奇数索引（0,2,...18）为+2.0，偶数索引（1,3,...19）为-2.5
+    true_beta = np.zeros(p)
+    for i in range(0, 20, 2):
+        true_beta[i] = 2.0
+        true_beta[i+1] = -2.5
+
+    # 计算信噪比，如果指定snr则调整sigma
+    signal_var = np.var(X @ true_beta)
+    if snr is not None:
+        sigma = np.sqrt(signal_var / snr)
+
+    # 生成响应
+    y = X @ true_beta + np.random.randn(n) * sigma
+
+    return X, y, true_beta
+
+
 def get_experiment_configs() -> dict:
     """获取所有实验的配置信息"""
     return {

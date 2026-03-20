@@ -164,6 +164,31 @@ def _fit_numba_lasso_path(
     if group_weights is None:
         group_weights = np.ones(n_features)
 
+    # 非对称惩罚权重标准化（和坐标下降保持一致）
+    p = n_features
+    w_plus_norm = np.zeros(n_features)
+    w_minus_norm = np.zeros(n_features)
+
+    # 预计算原始权重并求和
+    S_plus = 0.0
+    S_minus = 0.0
+    for j in range(n_features):
+        fw = feature_weights[j]
+        fw_safe = max(fw, 1e-10)
+        w_plus = fw
+        w_minus = alpha / fw_safe + beta * fw
+        w_plus_norm[j] = w_plus
+        w_minus_norm[j] = w_minus
+        S_plus += w_plus
+        S_minus += w_minus
+
+    # 标准化并乘以p，使平均权重为1
+    S_plus_safe = max(S_plus, 1e-10)
+    S_minus_safe = max(S_minus, 1e-10)
+    for j in range(n_features):
+        w_plus_norm[j] = (w_plus_norm[j] / S_plus_safe) * p
+        w_minus_norm[j] = (w_minus_norm[j] / S_minus_safe) * p
+
     # Pre-allocate result storage
     betas_matrix = np.zeros((n_lmdas, n_features))
     intercepts = np.zeros(n_lmdas)
@@ -207,15 +232,13 @@ def _fit_numba_lasso_path(
 
             for j in range(n_features):
                 w = weights_gd[j]
-                fw = feature_weights[j]
                 gs = group_signs[j]
                 gw = group_weights[j]
 
                 # Compute base thresholds (feature adaptive)
-                # XLasso paper: w_j^+ = lambda * w_j, w_j^- = lambda * (alpha / w_j + beta * w_j)
-                fw_safe = max(fw, 1e-10)  # Avoid division by zero
-                tau_pos_base = lr * lmda * fw
-                tau_neg_base = lr * lmda * (alpha / fw_safe + beta * fw)
+                # 使用标准化后的权重，和坐标下降保持一致
+                tau_pos_base = lr * lmda * w_plus_norm[j]
+                tau_neg_base = lr * lmda * w_minus_norm[j]
 
                 # Add legacy negative_penalty for backward compatibility
                 if negative_penalty > 0:
@@ -304,6 +327,31 @@ def _fit_numba_lasso_path_coordinate_descent(
             if X_diag[j] < 1e-10:
                 X_diag[j] = 1e-10
 
+    # 非对称惩罚权重标准化（按要求实现）
+    p = n_features
+    w_plus_norm = np.zeros(n_features)
+    w_minus_norm = np.zeros(n_features)
+
+    # 预计算原始权重并求和
+    S_plus = 0.0
+    S_minus = 0.0
+    for j in range(n_features):
+        fw = feature_weights[j]
+        fw_safe = max(fw, 1e-10)
+        w_plus = fw
+        w_minus = alpha / fw_safe + beta * fw
+        w_plus_norm[j] = w_plus
+        w_minus_norm[j] = w_minus
+        S_plus += w_plus
+        S_minus += w_minus
+
+    # 标准化并乘以p，使平均权重为1
+    S_plus_safe = max(S_plus, 1e-10)
+    S_minus_safe = max(S_minus, 1e-10)
+    for j in range(n_features):
+        w_plus_norm[j] = (w_plus_norm[j] / S_plus_safe) * p
+        w_minus_norm[j] = (w_minus_norm[j] / S_minus_safe) * p
+
     # Pre-allocate result storage
     betas_matrix = np.zeros((n_lmdas, n_features))
 
@@ -317,14 +365,12 @@ def _fit_numba_lasso_path_coordinate_descent(
         tau_pos = np.zeros(n_features)
         tau_neg = np.zeros(n_features)
         for j in range(n_features):
-            fw = feature_weights[j]
             gs = group_signs[j]
             gw = group_weights[j]
-            fw_safe = max(fw, 1e-10)
 
-            # Base thresholds from XLasso formula
-            tau_pos_base = lmda * fw
-            tau_neg_base = lmda * (alpha / fw_safe + beta * fw)
+            # Base thresholds from XLasso formula（使用标准化后的权重）
+            tau_pos_base = lmda * w_plus_norm[j]
+            tau_neg_base = lmda * w_minus_norm[j]
 
             # Add negative penalty
             if negative_penalty > 0:
@@ -354,10 +400,12 @@ def _fit_numba_lasso_path_coordinate_descent(
                 beta_j = np.sum(X_center[:, j] * residual) / (n_samples * X_diag[j])
 
                 # Apply asymmetric soft thresholding
-                if beta_j > tau_pos[j]:
-                    new_w = beta_j - tau_pos[j] / X_diag[j]
-                elif beta_j < -tau_neg[j]:
-                    new_w = beta_j + tau_neg[j] / X_diag[j]
+                tau_pos_scaled = tau_pos[j] / X_diag[j]
+                tau_neg_scaled = tau_neg[j] / X_diag[j]
+                if beta_j > tau_pos_scaled:
+                    new_w = beta_j - tau_pos_scaled
+                elif beta_j < -tau_neg_scaled:
+                    new_w = beta_j + tau_neg_scaled
                 else:
                     new_w = 0.0
 
