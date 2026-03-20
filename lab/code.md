@@ -269,3 +269,318 @@ AR(1)场景下软约束XLasso性能大幅提升，完全解决过拟合问题：
 运行过程中会实时打印每个方法的指标结果，运行结束后会在 `result/exp_001` 目录下生成两个文件：
 - `experiment_001_results.csv`：所有重复实验的详细原始数据
 - `experiment_001_summary.csv`：按信噪比和方法分组的平均结果汇总表
+
+---
+
+## XLasso 函数调用指南
+
+### 核心函数：fit_uni()
+用于拟合XLasso模型，返回整个正则化路径的结果。
+
+#### 函数签名
+```python
+def fit_uni(
+    X: np.ndarray,
+    y: np.ndarray,
+    family: str = "gaussian",
+    adaptive_weighting: bool = True,
+    weight_method: str = "p_value",
+    gamma: float = 1.0,
+    sharp_scale: float = 0.0,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    lmda: Optional[Union[float, np.ndarray]] = None,
+    lmda_min_ratio: float = 1e-3,
+    n_lmdas: int = 30,
+    warm_start: bool = True,
+    max_iter: int = 200,
+    tol: float = 1e-4,
+    backend: str = "numba",
+    # v2.0 新增：成对正交分解参数
+    enable_orthogonal_decomp: bool = False,
+    orthogonal_corr_threshold: float = 0.7,
+    enable_pair_aware_filter: bool = False,
+    pair_filter_k: Optional[int] = None,
+    # v2.1 新增：组级扩展参数
+    enable_group_decomp: bool = False,
+    group_corr_threshold: float = 0.7,
+    max_group_size: int = 10,
+    enable_group_aware_filter: bool = False,
+    group_filter_k: Optional[int] = None
+) -> UniLassoResult:
+```
+
+#### 核心参数说明
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| **基础参数** | | | |
+| X | np.ndarray | 必填 | 设计矩阵，形状 (n_samples, n_features) |
+| y | np.ndarray | 必填 | 响应变量，形状 (n_samples,) |
+| family | str | "gaussian" | GLM家族类型：gaussian/binomial/poisson |
+| **权重参数** | | | |
+| adaptive_weighting | bool | True | 是否启用自适应权重惩罚 |
+| weight_method | str | "p_value" | 权重计算方法：p_value/t_statistic/correlation |
+| gamma | float | 1.0 | 权重指数，控制权重对比度 |
+| sharp_scale | float | 0.0 | p值锐化指数，0表示不锐化，越大权重差异越大 |
+| alpha | float | 1.0 | 显著变量负系数惩罚强度 |
+| beta | float | 1.0 | 不显著变量惩罚强度 |
+| **正则化参数** | | | |
+| lmda | float/array | None | 自定义正则化参数，None表示自动生成路径 |
+| lmda_min_ratio | float | 1e-3 | 最小lambda与最大lambda的比值 |
+| n_lmdas | int | 30 | 正则化路径长度 |
+| **求解器参数** | | | |
+| backend | str | "numba" | 求解器后端：numba（高速）/pytorch（灵活） |
+| max_iter | int | 200 | 最大迭代次数 |
+| tol | float | 1e-4 | 收敛阈值 |
+| **v2.0 成对优化参数** | | | |
+| enable_orthogonal_decomp | bool | False | 开启成对正交分解，处理反符号孪生变量场景 |
+| orthogonal_corr_threshold | float | 0.7 | 成对相关系数阈值，超过则进行正交分解 |
+| enable_pair_aware_filter | bool | False | 开启成对感知过滤，提升成对识别准确率 |
+| pair_filter_k | int | None | 成对过滤保留的变量数，None表示自动 |
+| **v2.1 组级优化参数** | | | |
+| enable_group_decomp | bool | False | 开启组级正交分解，处理任意大小的相关变量组 |
+| group_corr_threshold | float | 0.7 | 组相关系数阈值，超过则归入同一组 |
+| max_group_size | int | 10 | 最大组大小，避免超大组 |
+| enable_group_aware_filter | bool | False | 开启组感知过滤，提升组内变量识别完整性 |
+| group_filter_k | int | None | 组过滤保留的变量数，None表示自动 |
+
+#### 返回值说明
+返回 `UniLassoResult` 对象包含以下属性：
+- `coefs`: 系数矩阵，形状 (n_lmdas, n_features)
+- `lmdas`: 正则化参数数组，形状 (n_lmdas,)
+- `intercepts`: 截距数组，形状 (n_lmdas,)
+- `n_iter`: 每个lambda路径的迭代次数
+- `beta_univariate`: 第一阶段单变量回归系数
+
+---
+
+### 核心函数：cv_uni()
+带交叉验证的XLasso拟合，自动选择最优正则化参数。
+
+#### 函数签名
+与 `fit_uni()` 完全一致，额外增加交叉验证参数：
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| n_folds | int | 5 | 交叉验证折数 |
+| scoring | str | "mse" | 评价指标：mse/accuracy/roc_auc |
+| n_jobs | int | 1 | 并行作业数，-1表示使用所有CPU |
+
+#### 返回值说明
+返回 `CrossValResult` 对象，包含：
+- `best_idx`: 最优lambda的索引
+- `best_lmda`: 最优lambda值
+- `best_coef`: 最优系数
+- `best_intercept`: 最优截距
+- `cv_scores`: 交叉验证分数数组
+- 所有 `fit_uni()` 返回的属性
+
+---
+
+### 使用示例
+
+#### 示例1：基础使用（默认参数）
+```python
+import numpy as np
+from unilasso.uni_lasso import fit_uni, cv_uni
+
+# 生成数据
+X = np.random.randn(300, 500)
+beta_true = np.zeros(500)
+beta_true[:10] = 2.0
+y = X @ beta_true + np.random.randn(300) * 0.5
+
+# 基础拟合
+fit = fit_uni(X, y)
+
+# 交叉验证拟合（推荐）
+cv_fit = cv_uni(X, y, n_folds=5)
+print(f"最优lambda: {cv_fit.best_lmda:.4f}")
+print(f"最优系数非零数: {np.sum(np.abs(cv_fit.best_coef) > 1e-8)}")
+```
+
+#### 示例2：降维打击场景（v2.0 成对优化）
+适用于高相关反符号孪生变量场景：
+```python
+from lab.data_generator import generate_twin_variable_experiment
+X, y, beta_true = generate_twin_variable_experiment(n=300, p=500, rho=0.85, snr=2.0)
+
+# 使用成对正交分解
+fit = fit_uni(
+    X, y,
+    family="gaussian",
+    adaptive_weighting=True,
+    weight_method="p_value",
+    gamma=0.5,
+    sharp_scale=20,
+    enable_orthogonal_decomp=True,
+    orthogonal_corr_threshold=0.8,
+    enable_pair_aware_filter=True,
+    pair_filter_k=20,
+    backend="numba"
+)
+
+# 取中间lambda的结果
+idx = len(fit.lmdas) // 2
+beta_pred = fit.coefs[idx, :]
+```
+
+#### 示例3：多变量组场景（v2.1 组级优化）
+适用于3个及以上高相关反符号变量组场景：
+```python
+# 生成三变量组数据
+n, p = 300, 500
+rho = 0.85
+X = np.random.randn(n, p)
+common = np.random.randn(n)
+for i in range(3):
+    X[:, i] = common * np.sqrt(rho) + np.random.randn(n) * np.sqrt(1-rho)
+true_beta = np.zeros(p)
+true_beta[0] = 2.0
+true_beta[1] = 2.0
+true_beta[2] = -3.0
+y = X @ true_beta + np.random.randn(n) * 1.0
+
+# 使用组级优化
+fit = fit_uni(
+    X, y,
+    enable_group_decomp=True,
+    group_corr_threshold=0.7,
+    max_group_size=10,
+    enable_group_aware_filter=True,
+    group_filter_k=10,
+    backend="numba"
+)
+```
+
+---
+
+### 常见场景最佳参数配置
+
+| 场景 | 推荐配置 |
+|------|----------|
+| **普通稀疏回归** | 默认参数即可，无需额外配置 |
+| **高相关变量（同符号）** | 开启组约束：`group_penalty=5.0, corr_threshold=0.7` |
+| **成对反符号孪生变量（降维打击）** | `enable_orthogonal_decomp=True, orthogonal_corr_threshold=0.8, enable_pair_aware_filter=True, pair_filter_k=20` |
+| **多变量反符号组** | `enable_group_decomp=True, group_corr_threshold=0.7, max_group_size=10, enable_group_aware_filter=True` |
+| **高噪声场景** | 增大`sharp_scale=20`，放大真实变量与噪声的权重差异 |
+| **需要更稀疏的结果** | 增大`beta=2.0~5.0`，提高不显著变量的惩罚强度 |
+| **需要保留更多真实变量** | 减小`alpha=0.1~0.5`，降低显著变量负系数的惩罚 |
+
+---
+
+### 版本兼容性说明
+- 所有v2.0和v2.1新增参数均为可选，默认关闭，完全向后兼容，原有代码无需任何修改即可运行。
+- 成对参数和组级参数可以同时开启，会先进行组级分解，再对组内小于等于2个变量的进行成对分解。
+- 当同时开启`enable_orthogonal_decomp`和`enable_group_decomp`时，组级参数优先级更高，成对参数作为组级的向后兼容别名。
+
+---
+
+## 综合实验计划（v2.2版本验证）
+### 一、实验目的
+全面对比XLasso所有算法形态与基准算法的性能，验证组正交分解替代硬组约束的效果，覆盖模拟场景和真实数据集。
+
+### 二、对比算法列表
+#### 1. 基准方法
+| 算法名称 | 说明 |
+|----------|------|
+| UniLasso | 原始UniLasso算法（基准） |
+| Lasso | 标准Lasso（sklearn实现） |
+
+#### 2. XLasso系列算法
+| 算法名称 | 参数配置 | 说明 |
+|----------|----------|------|
+| XLasso-Soft | `adaptive_weighting=False, enable_group_decomp=False, enable_group_constraint=False` | 仅非对称软约束，无其他改进 |
+| XLasso-Adaptive | `adaptive_weighting=True, enable_group_decomp=False, enable_group_constraint=False` | 软约束+自适应权重 |
+| XLasso-GroupDecomp | `adaptive_weighting=True, enable_group_decomp=True, enable_group_aware_filter=False` | 软约束+自适应权重+组正交分解 |
+| XLasso-Full | `adaptive_weighting=True, enable_group_decomp=True, enable_group_aware_filter=True` | 完整XLasso：软约束+自适应权重+组正交分解+组感知过滤 |
+| (弃用) XLasso-GroupConstraint | `adaptive_weighting=True, enable_group_constraint=True` | 旧版硬组约束（仅作为对比） |
+
+#### 3. 对标Lasso算法
+| 算法名称 | 说明 |
+|----------|------|
+| Adaptive Lasso | 自适应Lasso |
+| Group Lasso | 组Lasso（自动相关性分组） |
+| Fused Lasso | 融合Lasso |
+| Adaptive Sparse Group Lasso | 自适应稀疏组Lasso（同时支持组级和特征级稀疏） |
+
+### 三、实验设计
+#### 1. 模拟实验（4个经典场景，来自XLasso.md）
+| 实验编号 | 实验名称 | 场景特点 | 参数配置 |
+|----------|----------|----------|----------|
+| 实验1 | 高维成对相关稀疏回归 | 所有变量两两相关0.5，前100个变量非零 | n=300, p=1000, σ=[0.5, 1.0, 2.5] |
+| 实验2 | AR(1)相关稀疏回归 | 相邻变量相关0.8，奇数前50个变量非零 | n=300, p=1000, σ=[0.5, 1.0, 2.5] |
+| 实验3 | 二分类偏移变量选择 | AR(1)相关，前20个变量在正类偏移0.5 | n=200, p=500 |
+| 实验4 | 反符号孪生变量（降维打击） | 10对高相关(ρ=0.85)反符号变量 | n=300, p=1000, σ=1.0 |
+
+#### 2. 真实数据集实验（4个公开数据集）
+| 数据集 | 任务类型 | 样本量 | 特征数 | 特点 |
+|--------|----------|--------|--------|------|
+| Breast Cancer Wisconsin | 二分类 | 569 | 30 | 小维度医疗数据 |
+| Arcene | 二分类 | 200 | 10000 | 高维质谱数据，癌症检测 |
+| Gisette | 二分类 | 7000 | 5000 | 手写数字识别，区分0和4 |
+| Dorothea | 二分类 | 1150 | 100000 | 超高维稀疏数据，药物发现 |
+
+### 四、评价指标
+#### 回归任务（实验1、实验2）
+| 指标 | 说明 |
+|------|------|
+| MSE | 测试集均方误差（越小越好） |
+| TPR | 真阳性率（选对的真实变量比例，越大越好） |
+| FDR | 假发现率（选错的变量占选中变量的比例，越小越好） |
+| F1 | F1分数（变量选择综合性能，越大越好） |
+| 选中变量数 | 模型选择的非零变量数 |
+| 运行时间 | 单轮拟合耗时 |
+
+#### 分类任务（实验3、所有真实数据集）
+| 指标 | 说明 |
+|------|------|
+| AUC | 测试集ROC曲线下面积（越大越好） |
+| 准确率 | 分类准确率（越大越好） |
+| TPR | 真阳性率（选对的真实变量比例，模拟实验可用） |
+| FDR | 假发现率（模拟实验可用） |
+| F1 | F1分数（变量选择综合性能） |
+| 选中变量数 | 模型选择的非零变量数 |
+
+### 五、实验配置
+1. **重复次数**：每个实验重复运行10次，统计均值和标准差（避免随机波动）
+2. **超参数选择**：每个算法通过5折交叉验证选择最优超参数
+   - 正则化参数λ搜索范围：100个值的对数空间，从λ_max到λ_max*1e-4
+   - XLasso特有参数：固定alpha=1.0, beta=1.0，仅通过交叉验证选择最优gamma参数
+   - 对标Lasso算法（Adaptive Lasso/Group Lasso/Fused Lasso）通过交叉验证选择各自最优超参数
+3. **统一设置**：所有算法均使用标准化特征，拟合截距
+4. **硬件环境**：统一使用CPU运行，相同机器配置保证公平对比
+5. **求解器**：XLasso默认使用Numba加速坐标下降求解器，其他算法使用官方默认求解器
+
+### 六、结果呈现模板
+#### 模拟实验结果示例
+| 实验场景 | 算法 | MSE（均值±标准差） | TPR | FDR | F1 | 选中变量数 |
+|----------|------|---------------------|-----|-----|----|------------|
+| 实验2 σ=0.5 | UniLasso | 144.12±5.23 | 0.20±0.03 | 0.23±0.05 | 0.32±0.04 | 13±2 |
+| 实验2 σ=0.5 | XLasso-Full | **4.13±0.32** | **1.00±0.00** | 0.38±0.04 | **0.77±0.02** | 80±5 |
+
+#### 真实数据集结果示例
+| 数据集 | 算法 | AUC | 准确率 | 选中变量数 | 运行时间 |
+|--------|------|-----|--------|------------|----------|
+| Arcene | UniLasso | 0.78±0.03 | 0.75±0.04 | 15±3 | 1.2s |
+| Arcene | XLasso-Full | **0.89±0.02** | **0.86±0.03** | 25±4 | 2.5s |
+
+### 七、运行说明
+#### 实验启动命令
+```bash
+cd /home/lili/lyn/clear/XLasso/lab
+# 运行所有模拟实验
+python run_all_simulations.py --n-repeats 10
+# 运行所有真实数据集实验
+python run_all_real_datasets.py --n-repeats 10
+```
+
+#### 结果保存路径
+- 模拟实验结果：`result/simulations/`
+- 真实数据集结果：`result/real_datasets/`
+- 汇总报告：`result/final_comparison_report.md`
+
+### 八、重点对比维度
+1. **组正交分解 vs 硬组约束**：重点对比反符号孪生变量场景的性能，验证组正交分解的优势
+2. **各模块消融实验**：验证软约束、自适应权重、组正交分解、组感知过滤每个模块的独立贡献
+3. **真实场景适用性**：对比各算法在不同维度、不同稀疏度真实数据集上的泛化性能
+4. **效率对比**：对比各算法的运行时间和内存占用，评估可扩展性
