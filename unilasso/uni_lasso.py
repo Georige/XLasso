@@ -1406,11 +1406,15 @@ def cv_uni(
     spline_df: int = 5,
     spline_degree: int = 3,
     tree_max_depth: int = 2,
-    # 新增：反符号孪生变量优化参数
-    enable_orthogonal_decomp: bool = False,
-    orthogonal_corr_threshold: float = 0.7,
-    enable_pair_aware_filter: bool = False,
-    pair_filter_k: Optional[int] = None
+    # 新增：高相关变量组优化参数（支持成对/成组反符号变量场景）
+    enable_group_decomp: bool = False,  # 开启组级正交分解，兼容原有enable_orthogonal_decomp
+    enable_orthogonal_decomp: bool = False,  # 向后兼容别名
+    group_corr_threshold: float = 0.7,  # 组相关系数阈值
+    orthogonal_corr_threshold: float = 0.7,  # 向后兼容别名
+    enable_group_aware_filter: bool = False,  # 开启组感知过滤，兼容原有enable_pair_aware_filter
+    enable_pair_aware_filter: bool = False,  # 向后兼容别名
+    group_filter_k: Optional[int] = None,  # 组过滤保留的变量数，兼容原有pair_filter_k
+    pair_filter_k: Optional[int] = None  # 向后兼容别名
 ) -> UniLassoCVResult:
     """
     GroupAdaUniLasso: 交叉验证版的全GLM家族单变量引导 Lasso 回归。
@@ -1725,12 +1729,59 @@ def cv_uni(
 
 
 
-from typing import List, Optional, Union, Tuple
+from typing import List, Optional, Union, Tuple, Dict
 import numpy as np
 from scipy.stats import pearsonr
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import squareform
 
 # 假设已经导入了 _prepare_unilasso_input, _format_output, _print_unilasso_results, UniLassoResult
 # 以及我们之前编写的 _fit_pytorch_lasso_path 和 PyTorchGrpnetAdapter
+
+def detect_high_correlation_groups(X: np.ndarray, corr_threshold: float = 0.7,
+                                   max_group_size: int = 20) -> List[List[int]]:
+    """
+    检测高相关变量组，使用层次聚类
+    Args:
+        X: 特征矩阵 (n_samples, n_features)
+        corr_threshold: 相关系数阈值，超过此值的变量会被聚为一组
+        max_group_size: 最大组大小
+    Returns:
+        groups: 分组列表，每个元素是组内变量的索引列表
+    """
+    n_features = X.shape[1]
+    if n_features <= 1:
+        return []
+
+    # 计算相关系数矩阵
+    corr_matrix = np.corrcoef(X.T)
+    # 强制对称，解决浮点数精度问题
+    corr_matrix = (corr_matrix + corr_matrix.T) / 2
+    # 对角线强制为1，保证距离为0
+    np.fill_diagonal(corr_matrix, 1.0)
+    # 转换为距离矩阵：距离 = 1 - |相关系数|
+    dist_matrix = 1 - np.abs(corr_matrix)
+    # 对角线强制为0，满足距离矩阵要求
+    np.fill_diagonal(dist_matrix, 0.0)
+    # 层次聚类
+    linkage_matrix = linkage(squareform(dist_matrix), method='average')
+    # 聚类
+    clusters = fcluster(linkage_matrix, t=1 - corr_threshold, criterion='distance')
+
+    # 整理分组
+    groups_dict: Dict[int, List[int]] = {}
+    for idx, cluster_id in enumerate(clusters):
+        if cluster_id not in groups_dict:
+            groups_dict[cluster_id] = []
+        groups_dict[cluster_id].append(idx)
+
+    # 过滤掉单变量组和超过最大大小的组
+    groups = []
+    for group in groups_dict.values():
+        if 2 <= len(group) <= max_group_size:
+            groups.append(group)
+
+    return groups
 
 def fit_uni(
     X: np.ndarray,
@@ -1763,11 +1814,15 @@ def fit_uni(
     spline_df: int = 5,
     spline_degree: int = 3,
     tree_max_depth: int = 2,
-    # 新增：反符号孪生变量优化参数
-    enable_orthogonal_decomp: bool = False,
-    orthogonal_corr_threshold: float = 0.7,
-    enable_pair_aware_filter: bool = False,
-    pair_filter_k: Optional[int] = None
+    # 新增：高相关变量组优化参数（支持成对/成组反符号变量场景）
+    enable_group_decomp: bool = False,  # 开启组级正交分解，兼容原有enable_orthogonal_decomp
+    enable_orthogonal_decomp: bool = False,  # 向后兼容别名
+    group_corr_threshold: float = 0.7,  # 组相关系数阈值
+    orthogonal_corr_threshold: float = 0.7,  # 向后兼容别名
+    enable_group_aware_filter: bool = False,  # 开启组感知过滤，兼容原有enable_pair_aware_filter
+    enable_pair_aware_filter: bool = False,  # 向后兼容别名
+    group_filter_k: Optional[int] = None,  # 组过滤保留的变量数，兼容原有pair_filter_k
+    pair_filter_k: Optional[int] = None  # 向后兼容别名
 ) -> UniLassoResult:
     """
     GroupAdaUniLasso: 全GLM家族升级的单变量引导 Lasso 回归。
@@ -1855,27 +1910,56 @@ def fit_uni(
     else:
         _fit_lasso_path = _fit_pytorch_lasso_path
 
-    # 正交分量分解预处理（反符号孪生变量优化）
+    # 组级正交分解预处理（支持成对/成组反符号变量优化）
     transformation_info = []
     X_original = X.copy()
-    if enable_orthogonal_decomp:
+    # 向后兼容：两个开关任意一个开启都启用
+    decomp_enabled = enable_group_decomp or enable_orthogonal_decomp
+    if decomp_enabled:
         n_samples, n_features = X.shape
         X_transformed = X.copy()
 
-        # 找到所有高相关正相关对
-        for i in range(n_features):
-            for j in range(i+1, n_features):
-                corr, _ = pearsonr(X[:, i], X[:, j])
-                if corr >= orthogonal_corr_threshold:
-                    # 正交分解：共同分量S，对冲分量D
-                    S = (X[:, i] + X[:, j]) / 2
-                    D = (X[:, i] - X[:, j]) / 2
-                    X_transformed[:, i] = S
-                    X_transformed[:, j] = D
-                    transformation_info.append({
-                        "pair": (i, j),
-                        "corr": corr
-                    })
+        # 参数兼容
+        corr_threshold = group_corr_threshold if group_corr_threshold != 0.7 else orthogonal_corr_threshold
+
+        # 检测高相关变量组
+        groups = detect_high_correlation_groups(
+            X,
+            corr_threshold=corr_threshold,
+            max_group_size=max_group_size
+        )
+
+        # 对每个组做PCA正交变换
+        for group in groups:
+            group_size = len(group)
+            if group_size < 2:
+                continue
+
+            # 提取组内特征
+            X_group = X[:, group]
+            # 中心化
+            X_group_centered = X_group - np.mean(X_group, axis=0)
+            # PCA变换
+            cov_matrix = np.cov(X_group_centered.T)
+            eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+            # 按特征值降序排列
+            sorted_indices = np.argsort(eigenvalues)[::-1]
+            eigenvectors_sorted = eigenvectors[:, sorted_indices]
+            # 变换到正交空间
+            X_group_transformed = X_group_centered @ eigenvectors_sorted
+
+            # 替换原特征为变换后的特征
+            for idx_in_group, original_idx in enumerate(group):
+                X_transformed[:, original_idx] = X_group_transformed[:, idx_in_group]
+
+            # 记录变换信息，用于逆变换
+            transformation_info.append({
+                "type": "group",
+                "group_indices": group,
+                "eigenvectors": eigenvectors_sorted,
+                "mean": np.mean(X_group, axis=0)
+            })
+
         # 替换X为变换后的数据
         X = X_transformed
 
@@ -2035,53 +2119,88 @@ def fit_uni(
     if verbose:
         _print_unilasso_results(gamma_hat, lambda_path)
 
-    # 正交分量逆变换（如果开启了正交分解）
-    if enable_orthogonal_decomp and len(transformation_info) > 0:
+    # 正交分量逆变换（如果开启了组分解/正交分解）
+    decomp_enabled = enable_group_decomp or enable_orthogonal_decomp
+    if decomp_enabled and len(transformation_info) > 0:
         n_lmdas, n_features = gamma_hat.shape
         gamma_hat_original = gamma_hat.copy()
+
         for info in transformation_info:
-            i, j = info["pair"]
-            for lmda_idx in range(n_lmdas):
-                beta_S = gamma_hat[lmda_idx, i]
-                beta_D = gamma_hat[lmda_idx, j]
-                # 逆变换回原始空间
-                gamma_hat_original[lmda_idx, i] = beta_S + beta_D
-                gamma_hat_original[lmda_idx, j] = beta_S - beta_D
+            if info["type"] == "group":
+                # 组级逆变换
+                group_indices = info["group_indices"]
+                eigenvectors = info["eigenvectors"]
+                group_size = len(group_indices)
+
+                for lmda_idx in range(n_lmdas):
+                    # 提取变换空间的系数
+                    beta_transformed = gamma_hat[lmda_idx, group_indices]
+                    # 逆PCA变换：beta_original = eigenvectors @ beta_transformed + mean？
+                    # 注意：我们只变换了X，系数的逆变换是 beta_original = eigenvectors @ beta_transformed
+                    beta_original = eigenvectors @ beta_transformed
+                    # 赋值回原始变量
+                    for idx_in_group, original_idx in enumerate(group_indices):
+                        gamma_hat_original[lmda_idx, original_idx] = beta_original[idx_in_group]
+
+            elif "pair" in info:
+                # 兼容旧版本的成对变换
+                i, j = info["pair"]
+                for lmda_idx in range(n_lmdas):
+                    beta_S = gamma_hat[lmda_idx, i]
+                    beta_D = gamma_hat[lmda_idx, j]
+                    # 逆变换回原始空间
+                    gamma_hat_original[lmda_idx, i] = beta_S + beta_D
+                    gamma_hat_original[lmda_idx, j] = beta_S - beta_D
+
         gamma_hat = gamma_hat_original
 
-    # 成对感知过滤（如果开启）
-    if enable_pair_aware_filter:
+    # 组感知过滤（如果开启，兼容原有成对感知过滤）
+    filter_enabled = enable_group_aware_filter or enable_pair_aware_filter
+    if filter_enabled:
         n_lmdas, n_features = gamma_hat.shape
+        # 参数兼容
+        corr_threshold = group_corr_threshold if group_corr_threshold != 0.7 else orthogonal_corr_threshold
+        k = group_filter_k if group_filter_k is not None else pair_filter_k
+
+        # 预检测所有高相关组，用于后续扩展
+        all_groups = detect_high_correlation_groups(
+            X_original,
+            corr_threshold=corr_threshold,
+            max_group_size=max_group_size
+        )
+        # 构建变量到组的映射
+        var_to_groups: Dict[int, List[List[int]]] = {}
+        for group in all_groups:
+            for var_idx in group:
+                if var_idx not in var_to_groups:
+                    var_to_groups[var_idx] = []
+                var_to_groups[var_idx].append(group)
+
         for lmda_idx in range(n_lmdas):
             beta = gamma_hat[lmda_idx, :]
             beta_abs = np.abs(beta)
 
             # 确定保留的变量数
-            if pair_filter_k is None:
+            if k is None:
                 # 自动估计：取两倍真实变量数（默认20），或者前2%的变量
-                k = min(40, max(20, int(n_features * 0.02)))
+                k_val = min(40, max(20, int(n_features * 0.02)))
             else:
-                k = pair_filter_k
+                k_val = k
 
             # 选出前k个绝对值最大的变量
-            if k >= n_features:
-                continue
-            if k < 1:
+            if k_val >= n_features or k_val < 1:
                 continue
             # 获取阈值
-            threshold = np.sort(beta_abs)[::-1][k-1]
+            threshold = np.sort(beta_abs)[::-1][k_val-1]
             selected = np.where(beta_abs >= threshold)[0]
 
-            # 找到这些变量的高相关对，也加入选中集合
+            # 组扩展：如果一个变量被选中，它所在的所有组的变量都加入候选
             selected_set = set(selected)
-            # 只在前200个变量中找相关对，加快速度
-            max_search = min(n_features, 200)
-            for i in range(max_search):
-                if i in selected_set:
-                    for j in range(i+1, max_search):
-                        corr, _ = pearsonr(X_original[:, i], X_original[:, j])
-                        if corr >= orthogonal_corr_threshold and j not in selected_set:
-                            selected_set.add(j)
+            for var_idx in selected:
+                if var_idx in var_to_groups:
+                    for group in var_to_groups[var_idx]:
+                        for group_var in group:
+                            selected_set.add(group_var)
 
             # 过滤系数
             beta_filtered = np.zeros_like(beta)
