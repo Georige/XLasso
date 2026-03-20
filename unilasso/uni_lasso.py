@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 def _compute_feature_significance_weights(
     univariate_results: dict,
     weight_method: str = "t_statistic",
-    weight_max_scale: float = 10.0
+    gamma: float = 1.0,
+    sharp_scale: float = 0.0,
+    weight_max_scale: float = None
 ) -> np.ndarray:
     """
     Compute feature-level significance weights for adaptive penalty.
@@ -48,8 +50,19 @@ def _compute_feature_significance_weights(
         't_stats' (for t-statistic), 'p_values' (for p-value), 'correlations' (for correlation)
     weight_method : str
         Method to compute weights: 't_statistic', 'p_value', or 'correlation'
-    weight_max_scale : float
-        Maximum scale for weights, normalized to [1, weight_max_scale]
+    gamma : float
+        Contrast adjustment parameter for weight scaling:
+        - gamma < 1: 平滑权重差异，适合高相关降维打击场景
+        - gamma = 1: 默认线性映射
+        - gamma > 1: 锐化权重差异，适合高频噪声场景
+    sharp_scale : float
+        Exponential sharpening parameter (only for p_value method):
+        - sharp_scale = 0: 禁用指数锐化（默认）
+        - sharp_scale > 0: 对p值大的非显著变量施加指数级惩罚增强
+        推荐值：5~20，值越大非显著变量的惩罚增长越快
+    weight_max_scale : float, optional
+        If provided, weights are normalized to [1, weight_max_scale].
+        Defaults to None, which returns raw weights without normalization.
 
     Returns
     -------
@@ -60,22 +73,39 @@ def _compute_feature_significance_weights(
 
     if weight_method == "t_statistic":
         stats = np.abs(univariate_results.get('t_stats', np.ones(n_features)))
+        # t统计量越大越显著，权重越大（和方案A匹配，w越大惩罚越轻）
+        w_base = stats
+        # 应用 gamma 对比度调整（gamma>1放大差异）
+        weights = w_base ** gamma
     elif weight_method == "p_value":
         p_vals = univariate_results.get('p_values', np.ones(n_features))
-        stats = -np.log10(np.clip(p_vals, 1e-10, 1.0))
+        # 安全截断 p 值
+        p_vals_safe = np.clip(p_vals, a_min=1e-7, a_max=0.99)
+        # p值越小越显著，权重越大（和方案A匹配，w越大惩罚越轻）
+        # 超指数放大差异：对于显著p值，权重呈指数级增长
+        w_base = np.exp(10.0 / (-np.log(p_vals_safe) + 1e-10))
+        # 应用 gamma 对比度调整（gamma>1放大差异）
+        weights = w_base ** gamma
+        # 应用指数锐化：p越大（越不显著），权重越小，惩罚越重
+        if sharp_scale > 0:
+            weights = weights * np.exp(-p_vals_safe * sharp_scale)
     elif weight_method == "correlation":
         stats = np.abs(univariate_results.get('correlations', np.ones(n_features)))
+        # 相关性越大越显著，权重越大（和方案A匹配，w越大惩罚越轻）
+        w_base = stats
+        # 应用 gamma 对比度调整（gamma>1放大差异）
+        weights = w_base ** gamma
     else:
         raise ValueError(f"Unknown weight method: {weight_method}")
 
-    # Normalize to [1, weight_max_scale]
-    min_stat = np.min(stats)
-    max_stat = np.max(stats)
-    if max_stat == min_stat:
-        return np.ones(n_features)
-
-    normalized = (stats - min_stat) / (max_stat - min_stat)
-    weights = 1.0 + normalized * (weight_max_scale - 1.0)
+    # 如果指定了最大缩放比例，进行归一化
+    if weight_max_scale is not None:
+        min_w = np.min(weights)
+        max_w = np.max(weights)
+        if max_w == min_w:
+            return np.ones(n_features)
+        normalized = (weights - min_w) / (max_w - min_w)
+        weights = 1.0 + normalized * (weight_max_scale - 1.0)
 
     return weights
 
@@ -1363,7 +1393,9 @@ def cv_uni(
     # 新增：自适应惩罚参数 (与 fit_uni 一致)
     adaptive_weighting: bool = False,
     weight_method: str = "t_statistic",
-    weight_max_scale: float = 10.0,
+    weight_max_scale: float = None,
+    gamma: float = 1.0,
+    sharp_scale: float = 0.0,
     # 新增：组约束参数 (与 fit_uni 一致)
     enable_group_constraint: bool = False,
     corr_threshold: float = 0.7,
@@ -1373,7 +1405,12 @@ def cv_uni(
     univariate_model: str = "linear",
     spline_df: int = 5,
     spline_degree: int = 3,
-    tree_max_depth: int = 2
+    tree_max_depth: int = 2,
+    # 新增：反符号孪生变量优化参数
+    enable_orthogonal_decomp: bool = False,
+    orthogonal_corr_threshold: float = 0.7,
+    enable_pair_aware_filter: bool = False,
+    pair_filter_k: Optional[int] = None
 ) -> UniLassoCVResult:
     """
     GroupAdaUniLasso: 交叉验证版的全GLM家族单变量引导 Lasso 回归。
@@ -1404,7 +1441,18 @@ def cv_uni(
     weight_method : str, optional
         显著性权重计算方法: 't_statistic', 'p_value', 'correlation'
     weight_max_scale : float, optional
-        权重最大上限 (默认10.0)
+        如果提供，权重将归一化到 [1, weight_max_scale] 范围内。
+        默认None，返回原始权重不做归一化。
+    gamma : float, optional
+        权重对比度调整参数：
+        - gamma < 1: 平滑权重差异，适合高相关降维打击场景
+        - gamma = 1: 默认线性映射
+        - gamma > 1: 锐化权重差异，适合高频噪声场景
+    sharp_scale : float, optional
+        指数锐化参数（仅对p_value权重方法生效）：
+        - sharp_scale = 0: 禁用指数锐化（默认）
+        - sharp_scale > 0: 对p值大的非显著变量施加指数级惩罚增强
+        推荐值：5~20，值越大非显著变量的惩罚增长越快
     enable_group_constraint : bool, optional
         开启组级一致性约束 (默认关闭，与原版行为一致)
     corr_threshold : float, optional
@@ -1494,7 +1542,7 @@ def cv_uni(
 
     if adaptive_weighting:
         feature_weights = _compute_feature_significance_weights(
-            univariate_results, weight_method, weight_max_scale
+            univariate_results, weight_method, gamma, sharp_scale, weight_max_scale
         )
     else:
         feature_weights = np.ones(len(beta_coefs_fit))
@@ -1554,22 +1602,10 @@ def cv_uni(
             w_plus[j] = (w_plus[j] / S_plus_safe) * p
             w_minus[j] = (w_minus[j] / S_minus_safe) * p
 
-        # 按照非对称Lasso公式计算lambda_max（修正版）
-        # 对每个特征j，根据c_j = X_LOO_j^T y /n 的符号选择对应的权重
-        # c_j > 0: lambda_req = c_j / w_j^+ （正系数需要的最小惩罚）
-        # c_j < 0: lambda_req = -c_j / w_j^- （负系数需要的最小惩罚）
-        # lambda_max是所有lambda_req的最大值，刚好让所有系数为0
-        lambda_max = 0.0
-        for j in range(n_features):
-            c_j = Xty[j]
-            if c_j > 0:
-                req = c_j / max(w_plus[j], 1e-10)
-            elif c_j < 0:
-                req = (-c_j) / max(w_minus[j], 1e-10)
-            else:
-                req = 0.0
-            if req > lambda_max:
-                lambda_max = req
+        # 方案A：锚定原始梯度的lambda_max，只和数据本身有关，和权重无关
+        # 这样lambda路径是固定的，权重变化会直接反映到惩罚强度上
+        # 当信号权重w→0时，阻力λ*w真的变小；噪声权重变大时，阻力真的变大
+        lambda_max = np.max(np.abs(Xty))
 
         # 生成lambda路径
         lambda_min = lambda_max * lmda_min_ratio
@@ -1689,8 +1725,9 @@ def cv_uni(
 
 
 
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
 import numpy as np
+from scipy.stats import pearsonr
 
 # 假设已经导入了 _prepare_unilasso_input, _format_output, _print_unilasso_results, UniLassoResult
 # 以及我们之前编写的 _fit_pytorch_lasso_path 和 PyTorchGrpnetAdapter
@@ -1713,7 +1750,9 @@ def fit_uni(
     # 新增：自适应惩罚参数
     adaptive_weighting: bool = False,
     weight_method: str = "t_statistic",
-    weight_max_scale: float = 10.0,
+    weight_max_scale: float = None,
+    gamma: float = 1.0,
+    sharp_scale: float = 0.0,
     # 新增：组约束参数
     enable_group_constraint: bool = False,
     corr_threshold: float = 0.7,
@@ -1723,7 +1762,12 @@ def fit_uni(
     univariate_model: str = "linear",
     spline_df: int = 5,
     spline_degree: int = 3,
-    tree_max_depth: int = 2
+    tree_max_depth: int = 2,
+    # 新增：反符号孪生变量优化参数
+    enable_orthogonal_decomp: bool = False,
+    orthogonal_corr_threshold: float = 0.7,
+    enable_pair_aware_filter: bool = False,
+    pair_filter_k: Optional[int] = None
 ) -> UniLassoResult:
     """
     GroupAdaUniLasso: 全GLM家族升级的单变量引导 Lasso 回归。
@@ -1758,7 +1802,18 @@ def fit_uni(
     weight_method : str, optional
         显著性权重计算方法: 't_statistic', 'p_value', 'correlation'
     weight_max_scale : float, optional
-        权重最大上限 (默认10.0)
+        如果提供，权重将归一化到 [1, weight_max_scale] 范围内。
+        默认None，返回原始权重不做归一化。
+    gamma : float, optional
+        权重对比度调整参数：
+        - gamma < 1: 平滑权重差异，适合高相关降维打击场景
+        - gamma = 1: 默认线性映射
+        - gamma > 1: 锐化权重差异，适合高频噪声场景
+    sharp_scale : float, optional
+        指数锐化参数（仅对p_value权重方法生效）：
+        - sharp_scale = 0: 禁用指数锐化（默认）
+        - sharp_scale > 0: 对p值大的非显著变量施加指数级惩罚增强
+        推荐值：5~20，值越大非显著变量的惩罚增长越快
     enable_group_constraint : bool, optional
         开启组级一致性约束 (默认关闭，与原版行为一致)
     corr_threshold : float, optional
@@ -1799,6 +1854,30 @@ def fit_uni(
         _fit_lasso_path = _fit_numba_lasso_path_accelerated
     else:
         _fit_lasso_path = _fit_pytorch_lasso_path
+
+    # 正交分量分解预处理（反符号孪生变量优化）
+    transformation_info = []
+    X_original = X.copy()
+    if enable_orthogonal_decomp:
+        n_samples, n_features = X.shape
+        X_transformed = X.copy()
+
+        # 找到所有高相关正相关对
+        for i in range(n_features):
+            for j in range(i+1, n_features):
+                corr, _ = pearsonr(X[:, i], X[:, j])
+                if corr >= orthogonal_corr_threshold:
+                    # 正交分解：共同分量S，对冲分量D
+                    S = (X[:, i] + X[:, j]) / 2
+                    D = (X[:, i] - X[:, j]) / 2
+                    X_transformed[:, i] = S
+                    X_transformed[:, j] = D
+                    transformation_info.append({
+                        "pair": (i, j),
+                        "corr": corr
+                    })
+        # 替换X为变换后的数据
+        X = X_transformed
 
     # 2. 数据准备与预处理
     X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, _, original_lmdas, zero_var_idx = _prepare_unilasso_input(
@@ -1896,7 +1975,7 @@ def fit_uni(
 
     if adaptive_weighting:
         feature_weights = _compute_feature_significance_weights(
-            univariate_results, weight_method, weight_max_scale
+            univariate_results, weight_method, gamma, sharp_scale, weight_max_scale
         )
     else:
         feature_weights = np.ones(len(beta_coefs_fit))
@@ -1955,6 +2034,60 @@ def fit_uni(
 
     if verbose:
         _print_unilasso_results(gamma_hat, lambda_path)
+
+    # 正交分量逆变换（如果开启了正交分解）
+    if enable_orthogonal_decomp and len(transformation_info) > 0:
+        n_lmdas, n_features = gamma_hat.shape
+        gamma_hat_original = gamma_hat.copy()
+        for info in transformation_info:
+            i, j = info["pair"]
+            for lmda_idx in range(n_lmdas):
+                beta_S = gamma_hat[lmda_idx, i]
+                beta_D = gamma_hat[lmda_idx, j]
+                # 逆变换回原始空间
+                gamma_hat_original[lmda_idx, i] = beta_S + beta_D
+                gamma_hat_original[lmda_idx, j] = beta_S - beta_D
+        gamma_hat = gamma_hat_original
+
+    # 成对感知过滤（如果开启）
+    if enable_pair_aware_filter:
+        n_lmdas, n_features = gamma_hat.shape
+        for lmda_idx in range(n_lmdas):
+            beta = gamma_hat[lmda_idx, :]
+            beta_abs = np.abs(beta)
+
+            # 确定保留的变量数
+            if pair_filter_k is None:
+                # 自动估计：取两倍真实变量数（默认20），或者前2%的变量
+                k = min(40, max(20, int(n_features * 0.02)))
+            else:
+                k = pair_filter_k
+
+            # 选出前k个绝对值最大的变量
+            if k >= n_features:
+                continue
+            if k < 1:
+                continue
+            # 获取阈值
+            threshold = np.sort(beta_abs)[::-1][k-1]
+            selected = np.where(beta_abs >= threshold)[0]
+
+            # 找到这些变量的高相关对，也加入选中集合
+            selected_set = set(selected)
+            # 只在前200个变量中找相关对，加快速度
+            max_search = min(n_features, 200)
+            for i in range(max_search):
+                if i in selected_set:
+                    for j in range(i+1, max_search):
+                        corr, _ = pearsonr(X_original[:, i], X_original[:, j])
+                        if corr >= orthogonal_corr_threshold and j not in selected_set:
+                            selected_set.add(j)
+
+            # 过滤系数
+            beta_filtered = np.zeros_like(beta)
+            for idx in selected_set:
+                beta_filtered[idx] = beta[idx]
+            gamma_hat[lmda_idx, :] = beta_filtered
 
     # 8. 返回标准结果对象 (附加分组信息)
     unilasso_result = UniLassoResult(
