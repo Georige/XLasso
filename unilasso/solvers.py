@@ -262,40 +262,31 @@ def _fit_numba_lasso_path(
 
 
 @jit(nopython=True, cache=True)
-def _fit_numba_lasso_path_accelerated(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
+def _fit_numba_lasso_path_coordinate_descent(
+    X_center: np.ndarray,
+    y_center: np.ndarray,
     lmdas: np.ndarray,
     alpha: float = 1.0,
     beta: float = 1.0,
     negative_penalty: float = 0.0,
-    fit_intercept: bool = True,
-    lr: float = 0.01,
-    max_epochs: int = 5000,
+    max_epochs: int = 1000,
     tol: float = 1e-6,
     feature_weights: Optional[np.ndarray] = None,
     group_signs: Optional[np.ndarray] = None,
     group_penalty: float = 0.0,
     group_weights: Optional[np.ndarray] = None,
-    family: str = "gaussian",
-    momentum: float = 0.0
+    X_diag: Optional[np.ndarray] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Accelerated version with precomputed matrices for Gaussian family.
-    Falls back to regular version for non-Gaussian families.
+    Coordinate descent solver for XLasso (Gaussian family only, centered data).
+    No learning rate needed, avoids lambda scale matching issues.
 
-    This uses direct matrix computations instead of per-sample operations for Gaussian.
-    Supports double asymmetric soft-thresholding with adaptive weights and group constraints.
+    Implements coordinate descent with asymmetric soft thresholding,
+    warm start across lambda path.
+
+    Input data must be already centered (no intercept term needed here).
     """
-    if family != "gaussian":
-        # For non-Gaussian, use the regular version
-        return _fit_numba_lasso_path(
-            X_train, y_train, lmdas, alpha, beta, negative_penalty, fit_intercept,
-            lr, max_epochs, tol, feature_weights, group_signs,
-            group_penalty, group_weights, family, momentum
-        )
-
-    n_samples, n_features = X_train.shape
+    n_samples, n_features = X_center.shape
     n_lmdas = len(lmdas)
 
     # Default values for optional parameters
@@ -305,104 +296,158 @@ def _fit_numba_lasso_path_accelerated(
         group_signs = np.ones(n_features)
     if group_weights is None:
         group_weights = np.ones(n_features)
+    if X_diag is None:
+        X_diag = np.zeros(n_features)
+        for j in range(n_features):
+            X_diag[j] = np.sum(X_center[:, j] ** 2) / n_samples
+            # Avoid division by zero for constant features
+            if X_diag[j] < 1e-10:
+                X_diag[j] = 1e-10
 
     # Pre-allocate result storage
     betas_matrix = np.zeros((n_lmdas, n_features))
-    intercepts = np.zeros(n_lmdas)
 
-    # Precompute matrices for faster gradient computation (Gaussian only)
-    XtX = np.dot(X_train.T, X_train) / n_samples
-    Xty = np.dot(X_train.T, y_train) / n_samples
-    y_mean = np.mean(y_train)
-    X_mean = np.mean(X_train, axis=0)
-
-    # Initialize parameters
+    # Initialize parameters (warm start across all lambdas)
     weights = np.zeros(n_features)
-    bias = 0.0
-    # Initialize momentum velocities
-    v_weights = np.zeros(n_features)
-    v_bias = 0.0
+    residual = y_center.copy()
 
+    # Process lambdas in descending order (warm start)
     for i, lmda in enumerate(lmdas):
-        # Reset velocity when lambda changes (warm start for velocity)
-        v_weights *= 0.5
-        v_bias *= 0.5
+        # Precompute thresholds for all features
+        tau_pos = np.zeros(n_features)
+        tau_neg = np.zeros(n_features)
+        for j in range(n_features):
+            fw = feature_weights[j]
+            gs = group_signs[j]
+            gw = group_weights[j]
+            fw_safe = max(fw, 1e-10)
 
-        # For early stopping: track last 3 changes to avoid premature stop
-        last_changes = np.zeros(3)
-        change_idx = 0
+            # Base thresholds from XLasso formula
+            tau_pos_base = lmda * fw
+            tau_neg_base = lmda * (alpha / fw_safe + beta * fw)
 
+            # Add negative penalty
+            if negative_penalty > 0:
+                tau_neg_base += negative_penalty * fw
+
+            # Add group penalty
+            if gs > 0:
+                tau_neg[j] = tau_neg_base + group_penalty * gw
+                tau_pos[j] = tau_pos_base
+            else:
+                tau_pos[j] = tau_pos_base + group_penalty * gw
+                tau_neg[j] = tau_neg_base
+
+        # Coordinate descent cycles
         for epoch in range(max_epochs):
-            # Nesterov momentum: look ahead step
-            weights_lookahead = weights + momentum * v_weights
-            bias_lookahead = bias + momentum * v_bias
-
-            # Fast gradient computation using precomputed matrices (Gaussian only)
-            grad_weights = np.dot(XtX, weights_lookahead) + bias_lookahead * X_mean - Xty
-            grad_bias = np.dot(X_mean, weights_lookahead) + bias_lookahead - y_mean
-
-            # Update velocities
-            v_weights = momentum * v_weights - lr * grad_weights
-            v_bias = momentum * v_bias - lr * grad_bias
-
-            # Take Nesterov step
-            weights_new = weights + v_weights
-            bias_new = bias + v_bias
-
-            # Double asymmetric proximal operator (XLasso original formula)
-            w_prox = np.zeros_like(weights_new)
+            max_change = 0.0
 
             for j in range(n_features):
-                w = weights_new[j]
-                fw = feature_weights[j]
-                gs = group_signs[j]
-                gw = group_weights[j]
+                # Old weight value
+                old_w = weights[j]
 
-                # Compute base thresholds (feature adaptive)
-                # XLasso paper: w_j^+ = lambda * w_j, w_j^- = lambda * (alpha / w_j + beta * w_j)
-                fw_safe = max(fw, 1e-10)  # Avoid division by zero
-                tau_pos_base = lr * lmda * fw
-                tau_neg_base = lr * lmda * (alpha / fw_safe + beta * fw)
+                if old_w != 0:
+                    # Remove the effect of feature j from residual
+                    residual += X_center[:, j] * old_w
 
-                # Add legacy negative_penalty for backward compatibility
-                if negative_penalty > 0:
-                    tau_neg_base += lr * negative_penalty * fw
+                # Compute partial correlation / least squares solution for feature j
+                beta_j = np.sum(X_center[:, j] * residual) / (n_samples * X_diag[j])
 
-                # Compute group penalty adjustment
-                if gs > 0:
-                    # Group sign is positive: extra penalty for negative values
-                    tau_neg = tau_neg_base + lr * group_penalty * gw
-                    tau_pos = tau_pos_base
+                # Apply asymmetric soft thresholding
+                if beta_j > tau_pos[j]:
+                    new_w = beta_j - tau_pos[j] / X_diag[j]
+                elif beta_j < -tau_neg[j]:
+                    new_w = beta_j + tau_neg[j] / X_diag[j]
                 else:
-                    # Group sign is negative: extra penalty for positive values
-                    tau_pos = tau_pos_base + lr * group_penalty * gw
-                    tau_neg = tau_neg_base
+                    new_w = 0.0
 
-                # Apply soft thresholding
-                if w > tau_pos:
-                    w_prox[j] = w - tau_pos
-                elif w < -tau_neg:
-                    w_prox[j] = w + tau_neg
-                else:
-                    w_prox[j] = 0.0
+                # Update weights and residual
+                weights[j] = new_w
+                if new_w != 0:
+                    residual -= X_center[:, j] * new_w
+
+                # Track maximum change for convergence check
+                change = np.abs(new_w - old_w)
+                if change > max_change:
+                    max_change = change
 
             # Check convergence
-            max_change = np.max(np.abs(w_prox - weights))
-            last_changes[change_idx] = max_change
-            change_idx = (change_idx + 1) % 3
-
-            # Converge only if last 3 changes are all below tol
-            converged = epoch > 3 and np.all(last_changes < tol)
-
-            if converged:
+            if max_change < tol:
                 break
 
-            weights = w_prox
-            bias = bias_new
+        # Store results
+        betas_matrix[i, :] = weights.copy()
 
-        # 调试：打印权重的最大绝对值
-        # print(f"Lambda {lmda:.6f}: max weight = {np.max(np.abs(weights)):.6f}, n_nonzero = {np.sum(np.abs(weights) > 1e-8)}")
-        betas_matrix[i, :] = weights
-        intercepts[i] = bias
+    return betas_matrix
+
+
+def _fit_numba_lasso_path_accelerated(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    lmdas: np.ndarray,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    negative_penalty: float = 0.0,
+    fit_intercept: bool = True,
+    lr: float = 0.01,  # Unused for coordinate descent
+    max_epochs: int = 1000,
+    tol: float = 1e-6,
+    feature_weights: Optional[np.ndarray] = None,
+    group_signs: Optional[np.ndarray] = None,
+    group_penalty: float = 0.0,
+    group_weights: Optional[np.ndarray] = None,
+    family: str = "gaussian",
+    momentum: float = 0.0  # Unused for coordinate descent
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Coordinate descent solver for Gaussian family with all preprocessing done in Python layer.
+    Avoids numba axis operation issues and type mismatches.
+    """
+    if family != "gaussian":
+        # Fall back to gradient descent for non-Gaussian families
+        return _fit_numba_lasso_path(
+            X_train, y_train, lmdas, alpha, beta, negative_penalty, fit_intercept,
+            lr, max_epochs, tol, feature_weights, group_signs,
+            group_penalty, group_weights, family, momentum
+        )
+
+    n_samples, n_features = X_train.shape
+
+    # Preprocess data in Python layer to avoid numba issues
+    if fit_intercept:
+        X_mean = np.mean(X_train, axis=0)
+        y_mean = np.mean(y_train)
+        X_center = X_train - X_mean
+        y_center = y_train - y_mean
+    else:
+        X_mean = np.zeros(n_features)
+        y_mean = 0.0
+        X_center = X_train
+        y_center = y_train
+
+    # Precompute diagonal of Gram matrix
+    X_diag = np.sum(X_center ** 2, axis=0) / n_samples
+    X_diag[X_diag < 1e-10] = 1e-10  # Avoid division by zero
+
+    # Call numba coordinate descent (only core numerical operations)
+    betas_matrix = _fit_numba_lasso_path_coordinate_descent(
+        X_center, y_center, lmdas,
+        alpha=alpha,
+        beta=beta,
+        negative_penalty=negative_penalty,
+        max_epochs=max_epochs,
+        tol=tol,
+        feature_weights=feature_weights,
+        group_signs=group_signs,
+        group_penalty=group_penalty,
+        group_weights=group_weights,
+        X_diag=X_diag
+    )
+
+    # Compute intercepts
+    intercepts = np.zeros(len(lmdas))
+    if fit_intercept:
+        for i in range(len(lmdas)):
+            intercepts[i] = y_mean - np.sum(betas_matrix[i] * X_mean)
 
     return betas_matrix, intercepts
