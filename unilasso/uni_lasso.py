@@ -2167,52 +2167,46 @@ def fit_uni(
         n_lmdas, n_features = gamma_hat.shape
         # 参数兼容
         corr_threshold = group_corr_threshold if group_corr_threshold != 0.7 else orthogonal_corr_threshold
-        k = group_filter_k if group_filter_k is not None else pair_filter_k
+        filter_k = group_filter_k if group_filter_k is not None else pair_filter_k
 
-        # 预检测所有高相关组，用于后续扩展
+        # 预检测所有高相关组
         all_groups = detect_high_correlation_groups(
             X_original,
             corr_threshold=corr_threshold,
             max_group_size=max_group_size
         )
-        # 构建变量到组的映射
-        var_to_groups: Dict[int, List[List[int]]] = {}
-        for group in all_groups:
-            for var_idx in group:
-                if var_idx not in var_to_groups:
-                    var_to_groups[var_idx] = []
-                var_to_groups[var_idx].append(group)
 
         for lmda_idx in range(n_lmdas):
             beta = gamma_hat[lmda_idx, :]
-            beta_abs = np.abs(beta)
+            beta_filtered = beta.copy()
 
-            # 确定保留的变量数
-            if k is None:
-                # 自动估计：取两倍真实变量数（默认20），或者前2%的变量
-                k_val = min(40, max(20, int(n_features * 0.02)))
-            else:
-                k_val = k
+            # 对每个组进行组感知过滤
+            for group in all_groups:
+                group_size = len(group)
+                if group_size == 0:
+                    continue
 
-            # 选出前k个绝对值最大的变量
-            if k_val >= n_features or k_val < 1:
-                continue
-            # 获取阈值
-            threshold = np.sort(beta_abs)[::-1][k_val-1]
-            selected = np.where(beta_abs >= threshold)[0]
+                # 统计组内被选中的变量数量（绝对值 > 1e-8）
+                count_selected = 0
+                for j in group:
+                    if np.abs(beta[j]) > 1e-8:
+                        count_selected += 1
 
-            # 组扩展：如果一个变量被选中，它所在的所有组的变量都加入候选
-            selected_set = set(selected)
-            for var_idx in selected:
-                if var_idx in var_to_groups:
-                    for group in var_to_groups[var_idx]:
-                        for group_var in group:
-                            selected_set.add(group_var)
+                # 确定保留阈值
+                if filter_k is None:
+                    # 使用比例阈值：默认保留组大小的50%
+                    threshold = int(group_size * 0.5)
+                else:
+                    # 使用绝对数量阈值
+                    threshold = filter_k
 
-            # 过滤系数
-            beta_filtered = np.zeros_like(beta)
-            for idx in selected_set:
-                beta_filtered[idx] = beta[idx]
+                # 组感知过滤规则：
+                # 如果组内选中变量数 >= 阈值，保留组内所有变量
+                # 否则，过滤掉整个组
+                if count_selected < threshold:
+                    for j in group:
+                        beta_filtered[j] = 0.0
+
             gamma_hat[lmda_idx, :] = beta_filtered
 
     # 8. 返回标准结果对象 (附加分组信息)

@@ -81,7 +81,7 @@ $$
 | `enable_group_decomp` | True/False | 是否开启组级正交分解 | False |
 | `group_corr_threshold` | 0.5 ~ 0.9 | 变量分组的相关系数阈值 $\tau$，值越大分组越少 | 0.7 |
 | `enable_group_aware_filter` | True/False | 是否开启组感知过滤 | False |
-| `group_filter_k` | int / None | 组过滤保留的变量数（绝对值），None表示使用默认阈值（组大小的50%） | None |
+| `group_filter_k` | int / None | 组过滤保留阈值：<br>- None：使用比例阈值，组内超过50%的变量被选中则保留整个组<br>- int：使用绝对数量阈值，组内至少有k个变量被选中则保留整个组 | None |
 
 ---
 
