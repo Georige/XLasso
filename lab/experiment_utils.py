@@ -66,41 +66,37 @@ ALGORITHMS = {
     'XLasso-Soft': {
         'class': 'xlasso',
         'params': {
-            'adaptive_weighting': False,
             'enable_group_decomp': False,
-        },
-        'task_type': ['classification', 'regression']
-    },
-    'XLasso-Adaptive': {
-        'class': 'xlasso',
-        'params': {
-            'adaptive_weighting': True,
-            'weight_method': 't_statistic',
-            'gamma': 1.0,
-            'enable_group_decomp': False,
+            'k': 1.0,
+            'lmda_min_ratio': 1e-2,
+            'lmda_scale': 1.0,
+            'n_lmdas': 100,
         },
         'task_type': ['classification', 'regression']
     },
     'XLasso-GroupDecomp': {
         'class': 'xlasso',
         'params': {
-            'adaptive_weighting': True,
-            'weight_method': 't_statistic',
-            'gamma': 1.0,
             'enable_group_decomp': True,
             'group_corr_threshold': 0.7,
+            'enable_group_aware_filter': False,
+            'k': 1.0,
+            'lmda_min_ratio': 1e-2,
+            'lmda_scale': 1.0,
+            'n_lmdas': 100,
         },
         'task_type': ['classification', 'regression']
     },
     'XLasso-Full': {
         'class': 'xlasso',
         'params': {
-            'adaptive_weighting': True,
-            'weight_method': 't_statistic',
-            'gamma': 1.0,
             'enable_group_decomp': True,
             'group_corr_threshold': 0.7,
             'enable_group_aware_filter': True,
+            'k': 1.0,
+            'lmda_min_ratio': 1e-2,
+            'lmda_scale': 1.0,
+            'n_lmdas': 100,
         },
         'task_type': ['classification', 'regression']
     },

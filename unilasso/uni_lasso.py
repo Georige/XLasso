@@ -1583,17 +1583,18 @@ def cv_uni(
         y_center = y - np.mean(y)
         Xty = X_center.T @ y_center / n_samples  # 每个特征的相关系数
 
-        # 预计算标准化后的w_plus和w_minus（和solver中的逻辑完全一致）
+        # 预计算标准化后的w_plus和w_minus（新的非对称惩罚公式）
         w_plus = np.zeros(n_features)
         w_minus = np.zeros(n_features)
         S_plus = 0.0
         S_minus = 0.0
 
         for j in range(n_features):
-            fw = feature_weights[j]
-            fw_safe = max(fw, 1e-10)
-            wp = fw
-            wm = alpha / fw_safe + beta * fw
+            p_j = univariate_results['p_values'][j]
+            # 新权重公式：w_j = 0.5 * p_j^k
+            wj = 0.5 * (p_j ** k)
+            wp = wj
+            wm = 1.0 - wj
             w_plus[j] = wp
             w_minus[j] = wm
             S_plus += wp
@@ -1790,8 +1791,10 @@ def fit_uni(
     lmdas: Optional[Union[float, List[float], np.ndarray]] = None,
     n_lmdas: Optional[int] = 100,
     lmda_min_ratio: Optional[float] = 1e-2,
-    alpha: float = 1.0,
-    beta: float = 1.0,
+    lmda_scale: float = 1.0,  # 全局lambda缩放系数
+    k: float = 1.0,  # 非对称惩罚权重调节系数
+    alpha: float = 1.0,  # 向后兼容参数
+    beta: float = 1.0,  # 向后兼容参数
     negative_penalty: float = 0.0,  # Backward compatibility: additional penalty on negative coefficients
     verbose: bool = False,
     backend: str = "numba",
@@ -1830,9 +1833,10 @@ def fit_uni(
     在指定的正则化路径上拟合模型，支持对负系数的自定义软惩罚、
     特征级自适应惩罚、组级符号一致性约束以及非线性单变量模型。
 
-    This implementation matches the XLasso paper:
-    $w_j^+ = \lambda \cdot w_j$, $w_j^- = \lambda \cdot (\frac{\alpha}{w_j} + \beta \cdot w_j)$
-    where $w_j = \frac{1}{-\log(p_j + \epsilon)}$ is the significance weight.
+    This implementation matches the new XLasso weight design:
+    $w_j = 0.5 \cdot p_j^k$, $w_j^+ = w_j$, $w_j^- = 1 - w_j$
+    where $p_j$ is the p-value of the univariate regression for feature j,
+    $k$ is the weight adjustment coefficient (default 1.0).
 
     Parameters
     ----------
@@ -1998,6 +2002,9 @@ def fit_uni(
                     n_lmdas=n_lmdas,
                     lmda_min_ratio=lmda_min_ratio
                 )
+
+    # 全局lambda缩放
+    lambda_path *= lmda_scale
 
     # 4. 计算自适应权重和分组约束 (新功能)
     feature_weights = None

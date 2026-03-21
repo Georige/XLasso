@@ -13,29 +13,31 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from experiment_utils import (
     EXPERIMENT_CONFIG, ALGORITHMS,
-    generate_experiment2_data, generate_experiment3_data, generate_experiment4_data,
+    generate_experiment1_data, generate_experiment2_data, generate_experiment3_data, generate_experiment4_data,
     run_algorithm, save_results
 )
 from other_lasso import GroupLasso
 
-# 待调优的超参数网格
+# 待调优的超参数网格（基于新权重公式✅）
 PARAM_GRID = {
     'XLasso-Soft': {
-        'soft_threshold_scale': [0.8, 1.0, 1.2, 1.5],
-        'lambda_ratio': [0.1, 0.5, 1.0, 2.0],
-    },
-    'XLasso-Adaptive': {
-        'p_value_threshold': [1e-4, 1e-3, 1e-2, 0.05],
-        'weight_exponent': [0.5, 1.0, 1.5, 2.0],
+        'k': [0.5, 0.8, 1.0, 1.5, 2.0, 3.0],
+        'lmda_min_ratio': [1e-5, 1e-4, 1e-3, 1e-2],
+        'lmda_scale': [0.1, 0.3, 0.5, 1.0, 2.0],
     },
     'XLasso-GroupDecomp': {
-        'corr_threshold': [0.6, 0.7, 0.8, 0.9],
-        'group_penalty_factor': [0.5, 1.0, 1.5, 2.0],
+        'k': [0.8, 1.0, 1.5],
+        'lmda_min_ratio': [1e-4, 1e-3],
+        'lmda_scale': [0.3, 0.5, 1.0],
+        'group_corr_threshold': [0.6, 0.7, 0.8],
+        'enable_group_aware_filter': [True, False],
     },
     'XLasso-Full': {
-        'soft_threshold_scale': [0.8, 1.0, 1.2],
-        'p_value_threshold': [1e-3, 1e-2, 0.05],
-        'corr_threshold': [0.7, 0.8],
+        'k': [0.8, 1.0, 1.5],
+        'lmda_min_ratio': [1e-4, 1e-3],
+        'lmda_scale': [0.3, 0.5, 1.0],
+        'group_corr_threshold': [0.6, 0.7, 0.8],
+        'enable_group_aware_filter': [True],
     }
 }
 
@@ -45,7 +47,7 @@ def parse_args():
                         choices=PARAM_GRID.keys(),
                         help='要调优的算法')
     parser.add_argument('--experiment', '-e', type=str, default='exp2',
-                        choices=['exp2', 'exp3', 'exp4-2'],
+                        choices=['exp1', 'exp2', 'exp3', 'exp4-2'],
                         help='调优使用的实验场景')
     parser.add_argument('--n-repeats', '-n', type=int, default=3,
                         help='每个参数组合的重复次数')
@@ -56,6 +58,7 @@ def parse_args():
 def get_data_generator(exp_id):
     """获取数据生成函数"""
     generators = {
+        'exp1': ('高维成对相关稀疏回归', generate_experiment1_data, 'gaussian'),
         'exp2': ('AR(1)相关稀疏回归', generate_experiment2_data, 'gaussian'),
         'exp3': ('二分类偏移变量选择', generate_experiment3_data, 'binomial'),
         'exp4-2': ('降维打击场景', generate_experiment4_data, 'binomial'),
