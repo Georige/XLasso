@@ -26,7 +26,7 @@ from sklearn.linear_model import LassoCV, LogisticRegressionCV
 # ------------------------------------------------------------------------------
 EXPERIMENT_CONFIG = {
     'random_state': 42,
-    'n_repeats': 10,  # 每个实验重复次数
+    'n_repeats': 3,  # 每个实验重复次数，优化后减少到3次加速运行
     'test_size': 0.3,
     'cv_folds': 3,  # 交叉验证折数
     'standardize': True,
@@ -36,21 +36,19 @@ EXPERIMENT_CONFIG = {
     'author': 'XLasso Team'
 }
 
-# 算法配置
+# 算法配置（按用户指定优先级排序：UniLasso → Lasso → XLasso全系 → Adaptive Lasso → Fused Lasso → Group Lasso → Adaptive Sparse Group Lasso）
 ALGORITHMS = {
-    # 基准算法
-    '逻辑回归(L2)': {
-        'class': LogisticRegressionCV,
+    # 优先级1: 原始UniLasso
+    '原始UniLasso': {
+        'class': 'xlasso',
         'params': {
-            'penalty': 'l2',
-            'cv': EXPERIMENT_CONFIG['cv_folds'],
-            'max_iter': 1000,
-            'solver': 'liblinear',
-            'n_jobs': EXPERIMENT_CONFIG['n_jobs'],
-            'random_state': EXPERIMENT_CONFIG['random_state']
+            'adaptive_weighting': False,
+            'enable_group_decomp': False,
         },
-        'task_type': ['classification']
+        'task_type': ['classification', 'regression']
     },
+
+    # 优先级2: 标准Lasso
     '标准Lasso': {
         'class': LogisticRegressionCV,
         'params': {
@@ -63,16 +61,8 @@ ALGORITHMS = {
         },
         'task_type': ['classification', 'regression']  # 回归用LassoCV
     },
-    '原始UniLasso': {
-        'class': 'xlasso',
-        'params': {
-            'adaptive_weighting': False,
-            'enable_group_decomp': False,
-        },
-        'task_type': ['classification', 'regression']
-    },
 
-    # XLasso系列
+    # 优先级3: XLasso全系
     'XLasso-Soft': {
         'class': 'xlasso',
         'params': {
@@ -115,7 +105,7 @@ ALGORITHMS = {
         'task_type': ['classification', 'regression']
     },
 
-    # 对标算法
+    # 优先级4: Adaptive Lasso
     'Adaptive Lasso': {
         'class': AdaptiveLassoCV,
         'params': {
@@ -126,16 +116,8 @@ ALGORITHMS = {
         },
         'task_type': ['classification', 'regression']
     },
-    'Group Lasso': {
-        'class': GroupLassoCV,
-        'params': {
-            'cv': EXPERIMENT_CONFIG['cv_folds'],
-            'n_jobs': EXPERIMENT_CONFIG['n_jobs'],
-            'max_iter': 1000,
-        },
-        'need_groups': True,  # 需要自动分组
-        'task_type': ['classification', 'regression']
-    },
+
+    # 优先级5: Fused Lasso
     'Fused Lasso': {
         'class': FusedLassoCV,
         'params': {
@@ -146,6 +128,20 @@ ALGORITHMS = {
         },
         'task_type': ['classification', 'regression']
     },
+
+    # 优先级6: Group Lasso
+    'Group Lasso': {
+        'class': GroupLassoCV,
+        'params': {
+            'cv': EXPERIMENT_CONFIG['cv_folds'],
+            'n_jobs': EXPERIMENT_CONFIG['n_jobs'],
+            'max_iter': 1000,
+        },
+        'need_groups': True,  # 需要自动分组
+        'task_type': ['classification', 'regression']
+    },
+
+    # 优先级7: Adaptive Sparse Group Lasso
     'Adaptive Sparse Group Lasso': {
         'class': AdaptiveSparseGroupLassoCV,
         'params': {
@@ -156,7 +152,21 @@ ALGORITHMS = {
         },
         'need_groups': True,
         'task_type': ['classification', 'regression']
-    }
+    },
+
+    # 辅助基准
+    '逻辑回归(L2)': {
+        'class': LogisticRegressionCV,
+        'params': {
+            'penalty': 'l2',
+            'cv': EXPERIMENT_CONFIG['cv_folds'],
+            'max_iter': 1000,
+            'solver': 'liblinear',
+            'n_jobs': EXPERIMENT_CONFIG['n_jobs'],
+            'random_state': EXPERIMENT_CONFIG['random_state']
+        },
+        'task_type': ['classification']
+    },
 }
 
 # ------------------------------------------------------------------------------
@@ -201,6 +211,32 @@ def generate_experiment2_data(n=300, p=1000, sigma=1.0, rho=0.8, family='gaussia
         y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
 
     return X, y, beta_true
+
+def generate_experiment3_data(n=200, p=500, sigma=0.5, rho=0.8, family='binomial'):
+    """实验3：二分类偏移变量选择场景"""
+    # AR(1)相关性结构
+    cov = np.zeros((p, p))
+    for i in range(p):
+        for j in range(p):
+            cov[i, j] = rho ** abs(i - j)
+    X = np.random.multivariate_normal(np.zeros(p), cov, size=n)
+
+    # 随机生成y标签
+    y = np.random.randint(0, 2, size=n)
+
+    # 对y=1的样本，前20个变量增加偏移量
+    y1_idx = y == 1
+    X[y1_idx, :20] += 0.5
+
+    # 真实系数：前20个变量为真实相关变量，系数通过偏移隐含
+    beta_true = np.zeros(p)
+    beta_true[:20] = 1.0  # 标记前20个为真实变量
+
+    if family != 'binomial':  # 回归任务
+        y = X @ beta_true + np.random.randn(n) * sigma
+
+    return X, y, beta_true
+
 
 def generate_experiment4_data(n=300, p=1000, sigma=1.0, rho=0.85, family='gaussian'):
     """实验4：反符号孪生变量（降维打击场景）"""
@@ -257,7 +293,7 @@ def calculate_metrics(y_true, y_pred, y_prob=None, beta_true=None, beta_pred=Non
 # ------------------------------------------------------------------------------
 # 算法运行函数
 # ------------------------------------------------------------------------------
-def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian', groups=None):
+def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian', groups=None, beta_true=None):
     """运行单个算法"""
     try:
         alg_config = ALGORITHMS[alg_name]
@@ -340,6 +376,19 @@ def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian',
         # 计算指标
         metrics = calculate_metrics(y_test, y_pred, y_prob, task_type='regression' if family == 'gaussian' else 'classification')
         metrics['n_selected'] = np.sum(np.abs(coef) > 1e-8)
+
+        # 计算变量选择指标（如果有真实系数）
+        if beta_true is not None:
+            beta_true_nonzero = np.abs(beta_true) > 1e-8
+            beta_pred_nonzero = np.abs(coef) > 1e-8
+            tp = np.sum(beta_true_nonzero & beta_pred_nonzero)
+            fp = np.sum(~beta_true_nonzero & beta_pred_nonzero)
+            fn = np.sum(beta_true_nonzero & ~beta_pred_nonzero)
+
+            metrics['tpr'] = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            metrics['fdr'] = fp / (tp + fp) if (tp + fp) > 0 else 0.0
+            metrics['f1'] = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+
         metrics['success'] = True
 
         return metrics

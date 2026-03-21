@@ -584,3 +584,42 @@ python run_all_real_datasets.py --n-repeats 10
 2. **各模块消融实验**：验证软约束、自适应权重、组正交分解、组感知过滤每个模块的独立贡献
 3. **真实场景适用性**：对比各算法在不同维度、不同稀疏度真实数据集上的泛化性能
 4. **效率对比**：对比各算法的运行时间和内存占用，评估可扩展性
+
+---
+
+## 工具集使用说明
+
+### 目录结构
+```
+lab/
+├── release/                    # 版本发布相关工具
+│   ├── visualize_experiments.py    # 结果可视化脚本
+│   └── release_version.py          # 版本发布脚本
+└── hyperparameter_tuning/      # 超参数调优相关工具
+    └── hyperparameter_tuning.py    # 调优实验模板
+```
+
+### 使用方法
+1. **可视化实验结果**：
+   ```bash
+   python release/visualize_experiments.py --result-dir <实验结果目录>
+   ```
+   自动生成所有算法的指标对比图、折线图、散点图和汇总表格。
+
+2. **发布版本**：
+   ```bash
+   python release/release_version.py --version v2.3.1 --result-dir <实验结果目录> --message "版本说明"
+   ```
+   自动完成：复制实验结果、生成版本说明、打Git标签、生成版本压缩包。
+
+3. **超参数调优**：
+   ```bash
+   python hyperparameter_tuning/hyperparameter_tuning.py --algorithm XLasso-Soft --experiment exp2
+   ```
+   支持对XLasso全系算法的关键超参数进行网格搜索调优。
+
+### 可选操作
+给脚本添加执行权限：
+```bash
+chmod +x release/*.py hyperparameter_tuning/*.py
+```
