@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 运行模拟实验
-支持实验1、实验2、实验4三个经典场景
+支持实验1~实验7共七个场景（包含3个魔鬼压力测试场景）
 """
 import sys
 import os
@@ -14,7 +14,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from experiment_utils import (
     EXPERIMENT_CONFIG, ALGORITHMS,
-    generate_experiment1_data, generate_experiment2_data, generate_experiment3_data, generate_experiment4_data,
+    generate_experiment1_data, generate_experiment2_data, generate_experiment3_data,
+    generate_experiment4_data, generate_experiment5_data, generate_experiment6_data,
+    generate_experiment7_data,
     run_algorithm, save_results
 )
 from other_lasso import GroupLasso
@@ -22,7 +24,7 @@ from other_lasso import GroupLasso
 def parse_args():
     parser = argparse.ArgumentParser(description='运行模拟实验')
     parser.add_argument('--experiment', '-e', type=str, default='all',
-                        choices=['exp1', 'exp2', 'exp3', 'exp4', 'exp4-2', 'all'],
+                        choices=['exp1', 'exp2', 'exp3', 'exp4', 'exp5', 'exp6', 'exp7', 'all'],
                         help='要运行的实验')
     parser.add_argument('--n-repeats', '-n', type=int, default=EXPERIMENT_CONFIG['n_repeats'],
                         help='实验重复次数')
@@ -43,11 +45,15 @@ def main():
         args.n_repeats = min(args.n_repeats, 2)
         print(f"🐞 调试模式: 重复次数={args.n_repeats}, 特征数=100")
 
-    # 实验配置（按用户指定的实验名称）
+    # 实验配置（按paper.md Section 5.1设置）
     experiments = {
+        'exp1': ('高维成对相关稀疏回归', generate_experiment1_data),
         'exp2': ('AR(1)相关稀疏回归', generate_experiment2_data),
         'exp3': ('二分类偏移变量选择', generate_experiment3_data),
-        'exp4-2': ('降维打击场景（孪生变量反符号选择）', generate_experiment4_data),
+        'exp4': ('孪生变量反符号选择', generate_experiment4_data),
+        'exp5': ('魔鬼等级1：绝对隐身陷阱', generate_experiment5_data),
+        'exp6': ('魔鬼等级2：鸠占鹊巢陷阱', generate_experiment6_data),
+        'exp7': ('魔鬼等级3：AR(1)符号雪崩', generate_experiment7_data),
     }
 
     # 确定要运行的实验
@@ -130,7 +136,6 @@ def main():
                 exp_name, data_generator = experiments[exp_id]
                 args.family = family
                 n_samples = 300
-                n_features = 1000 if not args.debug else 100
                 sigmas = [0.5, 1.0, 2.5]
 
                 print(f"\n🧪 实验: {exp_name} | 任务类型: {family}")
@@ -144,10 +149,14 @@ def main():
                     for sigma in sigmas:
                         print(f"  σ={sigma}...", end="", flush=True)
 
-                        # 生成数据
+                        # 生成数据（使用各实验默认参数）
                         X, y, beta_true = data_generator(
-                            n=n_samples, p=n_features, sigma=sigma, family=args.family
+                            n=n_samples, sigma=sigma, family=args.family
                         )
+                        # 调试模式：截断到100个特征
+                        if args.debug:
+                            X = X[:, :100]
+                            beta_true = beta_true[:100]
 
                         # 划分数据集
                         X_train, X_test, y_train, y_test = train_test_split(
