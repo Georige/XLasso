@@ -72,8 +72,14 @@ def parse_args():
 # ------------------------------------------------------------------------------
 def run_single_config(exp_id, config_dict, stage, n_repeats, family, result_base_dir, fixed_lambda=None):
     """通过subprocess调用run_simulation_experiments.py运行单次配置"""
-    # 构建命令行参数
-    alg_name = 'XLasso-Soft'
+    # 根据配置选择算法名称
+    if config_dict.get('enable_group_decomp'):
+        if config_dict.get('enable_group_aware_filter'):
+            alg_name = 'XLasso-Full'
+        else:
+            alg_name = 'XLasso-GroupDecomp'
+    else:
+        alg_name = 'XLasso-Soft'
 
     cmd = [
         sys.executable,
