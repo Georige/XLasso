@@ -35,6 +35,21 @@ def parse_args():
                         help='要运行的算法列表，逗号分隔，例如："原始UniLasso,标准Lasso,XLasso-Full"，默认运行所有算法')
     parser.add_argument('--debug', action='store_true',
                         help='调试模式，只运行2次重复，100个特征')
+    # -------- 结构参数覆盖（网格搜索用） --------
+    parser.add_argument('--fixed-lambda', type=float, default=None,
+                        help='固定lambda值，禁用CV，直接用该lambda计算（用于Stage1结构搜索）')
+    parser.add_argument('--k', type=float, default=None,
+                        help='覆盖XLasso的k(gamma)参数')
+    parser.add_argument('--enable-group-decomp', action='store_true',
+                        help='启用组分解（覆盖算法配置）')
+    parser.add_argument('--no-group-decomp', action='store_true',
+                        help='禁用组分解（覆盖算法配置）')
+    parser.add_argument('--group-corr-threshold', type=float, default=None,
+                        help='覆盖组相关系数阈值')
+    parser.add_argument('--no-group-aware-filter', action='store_true',
+                        help='禁用组感知过滤（覆盖算法配置）')
+    parser.add_argument('--save-root', type=str, default=None,
+                        help='覆盖结果保存根目录（用于tune_structure.py网格搜索）')
     return parser.parse_args()
 
 def main():
@@ -72,8 +87,11 @@ def main():
     from datetime import datetime
 
     # 创建全局保存目录
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_root = os.path.join(EXPERIMENT_CONFIG['save_dir'], f"simulation_results_{timestamp}")
+    if args.save_root:
+        save_root = args.save_root
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_root = os.path.join(EXPERIMENT_CONFIG['save_dir'], f"simulation_results_{timestamp}")
     os.makedirs(save_root, exist_ok=True)
     print(f"\n📂 所有实验结果将保存到: {save_root}")
 
@@ -91,6 +109,39 @@ def main():
 
     # 按算法优先级逐个运行：每个算法单独创建目录和csv文件（按你要求的目录结构）
     for method_idx, (method_name, method_config) in enumerate(filtered_algorithms):
+        # -------- 结构参数覆盖（网格搜索用） --------
+        # 动态构建算法配置（不修改原始ALGORITHMS）
+        alg_class = method_config['class']
+        params = method_config['params'].copy()
+        task_type = method_config['task_type']
+
+        # 如果是xlasso系列，根据命令行参数覆盖结构参数
+        if alg_class in ('xlasso', 'xlasso_cv'):
+            # --fixed-lambda: 切换到非CV版本，用固定lambda
+            if args.fixed_lambda is not None:
+                alg_class = 'xlasso'  # 切换到fit_uni路径
+                params['lmda'] = args.fixed_lambda
+                # 移除cv相关参数
+                params.pop('cv_folds', None)
+                params.pop('lmda_min_ratio', None)
+                params.pop('n_lmdas', None)
+
+            if args.k is not None:
+                params['k'] = args.k
+            if args.enable_group_decomp:
+                params['enable_group_decomp'] = True
+            if args.no_group_decomp:
+                params['enable_group_decomp'] = False
+                params['enable_group_aware_filter'] = False
+            if args.group_corr_threshold is not None:
+                params['group_corr_threshold'] = args.group_corr_threshold
+            if args.no_group_aware_filter:
+                params['enable_group_aware_filter'] = False
+
+            alg_class_overridden = alg_class
+        else:
+            alg_class_overridden = alg_class
+
         # 清理算法名称，创建合法文件名
         safe_method_name = method_name.replace('/', '_').replace(' ', '_').replace('(', '').replace(')', '')
         method_dir = os.path.join(save_root, f"{method_idx+1:02d}_{safe_method_name}")
@@ -103,11 +154,11 @@ def main():
         # 写入表头
         csv_header = [
             'experiment_id', 'experiment_name', 'family', 'repeat', 'sigma',
-            'mse', 'accuracy', 'auc', 'tpr', 'fdr', 'f1', 'n_selected', 'time_seconds'
+            'mse', 'accuracy', 'auc', 'tpr', 'fdr', 'f1', 'n_selected', 'est_error', 'time_seconds'
         ]
         summary_header = [
             'experiment_id', 'experiment_name', 'family', 'sigma',
-            'avg_mse', 'avg_accuracy', 'avg_auc', 'avg_tpr', 'avg_fdr', 'avg_f1', 'avg_n_selected', 'avg_time_seconds'
+            'avg_mse', 'avg_accuracy', 'avg_auc', 'avg_tpr', 'avg_fdr', 'avg_f1', 'avg_n_selected', 'avg_est_error', 'avg_time_seconds'
         ]
 
         with open(raw_file, 'w', newline='') as f:
@@ -124,10 +175,10 @@ def main():
         # 运行所有任务类型
         for family in families:
             # 检查任务类型是否支持
-            if family == 'gaussian' and 'regression' not in method_config['task_type']:
+            if family == 'gaussian' and 'regression' not in task_type:
                 print(f"⚠️  算法 {method_name} 不支持回归任务，跳过")
                 continue
-            if family == 'binomial' and 'classification' not in method_config['task_type']:
+            if family == 'binomial' and 'classification' not in task_type:
                 print(f"⚠️  算法 {method_name} 不支持分类任务，跳过")
                 continue
 
@@ -174,9 +225,16 @@ def main():
                         groups = GroupLasso.group_features_by_correlation(X_train, corr_threshold=0.7)
 
                         start_time = time.time()
+                        # 构建覆盖配置（用于网格搜索时传入动态参数）
+                        alg_config_override = {
+                            'class': alg_class_overridden,
+                            'params': params,
+                            'task_type': task_type
+                        }
                         metrics = run_algorithm(
                             method_name, X_train, y_train, X_test, y_test,
-                            family=args.family, groups=groups, beta_true=beta_true
+                            family=args.family, groups=groups, beta_true=beta_true, scaler=scaler,
+                            alg_config_override=alg_config_override
                         )
                         run_time = time.time() - start_time
 
@@ -189,12 +247,13 @@ def main():
                             fdr_val = metrics.get('fdr', np.nan)
                             f1_val = metrics.get('f1', np.nan)
                             n_selected_val = metrics.get('n_selected', np.nan)
+                            est_error_val = metrics.get('est_error', np.nan)
 
                             with open(raw_file, 'a', newline='') as f:
                                 writer = csv.writer(f)
                                 writer.writerow([
                                     exp_id, exp_name, family, repeat+1, sigma,
-                                    mse_val, accuracy_val, auc_val, tpr_val, fdr_val, f1_val, n_selected_val, run_time
+                                    mse_val, accuracy_val, auc_val, tpr_val, fdr_val, f1_val, n_selected_val, est_error_val, run_time
                                 ])
 
                             result_row = {
@@ -234,6 +293,7 @@ def main():
                             avg_fdr = np.nanmean([r.get('fdr', np.nan) for r in sigma_results])
                             avg_f1 = np.nanmean([r.get('f1', np.nan) for r in sigma_results])
                             avg_n_selected = np.nanmean([r.get('n_selected', np.nan) for r in sigma_results])
+                            avg_est_error = np.nanmean([r.get('est_error', np.nan) for r in sigma_results])
                             avg_time = np.nanmean([r['time_seconds'] for r in sigma_results])
 
                             # 格式化显示，只显示存在的指标
@@ -252,6 +312,8 @@ def main():
                                 output_parts.append(f"F1={avg_f1:.4f}")
                             if not np.isnan(avg_n_selected):
                                 output_parts.append(f"选中变量数={avg_n_selected:.1f}")
+                            if not np.isnan(avg_est_error):
+                                output_parts.append(f"EstError={avg_est_error:.4f}")
                             output_parts.append(f"耗时={avg_time:.2f}s")
                             print("  " + " ".join(output_parts))
 
@@ -260,7 +322,7 @@ def main():
                                 summary_writer = csv.writer(f)
                                 summary_writer.writerow([
                                     exp_id, exp_name, family, sigma,
-                                    avg_mse, avg_accuracy, avg_auc, avg_tpr, avg_fdr, avg_f1, avg_n_selected, avg_time
+                                    avg_mse, avg_accuracy, avg_auc, avg_tpr, avg_fdr, avg_f1, avg_n_selected, avg_est_error, avg_time
                                 ])
 
         print(f"\n✅ 算法 {method_name} 所有实验完成!")
