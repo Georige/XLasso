@@ -2167,6 +2167,9 @@ def fit_uni(
     # 组感知过滤（如果开启，兼容原有成对感知过滤）
     filter_enabled = enable_group_aware_filter or enable_pair_aware_filter
     if filter_enabled:
+        # 确保 gamma_hat 是 2D 数组 (n_lmdas, n_features)
+        if gamma_hat.ndim == 1:
+            gamma_hat = gamma_hat.reshape(1, -1)
         n_lmdas, n_features = gamma_hat.shape
         # 参数兼容
         corr_threshold = group_corr_threshold if group_corr_threshold != 0.7 else orthogonal_corr_threshold

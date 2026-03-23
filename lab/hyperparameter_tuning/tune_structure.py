@@ -41,11 +41,20 @@ from experiment_utils import EXPERIMENT_CONFIG
 # 结构参数搜索空间
 # ------------------------------------------------------------------------------
 K_VALUES = [0.3, 0.5, 1.0, 2.0, 3.0]
-GROUP_CORR_THRESHOLDS = [0.5, 0.7, 0.9]
+GROUP_CORR_THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.9]  # 扩展低阈值测试Group效果
 FIXED_LAMBDA_STAGE1 = [0.5, 1.0, 1.5, 2.0]  # Stage1固定lambda列表，测试何时开启Group
 
 # 实验列表
 ALL_EXPERIMENTS = ['exp1', 'exp2', 'exp3', 'exp4', 'exp5', 'exp6', 'exp7']
+
+# 二分类任务实验（使用binomial family）
+BINOMIAL_EXPERIMENTS = ['exp3']
+
+def get_experiment_family(exp_id, default_family):
+    """获取实验对应的family类型，exp3为二分类任务"""
+    if exp_id in BINOMIAL_EXPERIMENTS:
+        return 'binomial'
+    return default_family
 
 # ------------------------------------------------------------------------------
 # 命令行参数
@@ -251,7 +260,7 @@ def stage1_grid_search(experiments, n_repeats, n_jobs, family, result_base_dir):
 
     with ProcessPoolExecutor(max_workers=n_jobs) as executor:
         futures = {
-            executor.submit(run_single_config, exp_id, config, 1, n_repeats, family, result_base_dir, fixed_lambda): (exp_id, config, fixed_lambda)
+            executor.submit(run_single_config, exp_id, config, 1, n_repeats, get_experiment_family(exp_id, family), result_base_dir, fixed_lambda): (exp_id, config, fixed_lambda)
             for exp_id, config, fixed_lambda in tasks
         }
 

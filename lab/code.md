@@ -1,53 +1,78 @@
 # 实验运行说明
 
-## 实验1：高维成对相关稀疏回归
+## run_simulation_experiments.py：综合模拟实验脚本
 
-### 运行命令
+`run_simulation_experiments.py` 是一个综合模拟实验运行脚本，支持7个场景、对抗7种算法、两种任务类型。
+
+### 支持的实验场景（`--experiment`）
+
+| 标识 | 场景 | 数据特点 |
+|------|------|----------|
+| `exp1` | 高维成对相关稀疏回归 | p=500, X_ij=0.5, 前20变量β=1.0 |
+| `exp2` | AR(1)相关稀疏回归 | p=500, ρ=0.8^\|i-j\|, 奇数前20变量β=1.0 |
+| `exp3` | 二分类偏移变量选择 | p=500, AR(1), y=1样本前20变量偏移0.6 |
+| `exp4` | 孪生变量反符号选择 | p=1000, 10对孪生变量ρ=0.85, β=2.0/-2.5 |
+| `exp5` | 魔鬼等级1：绝对隐身陷阱 | p=1000, 边际相关性精确归零 |
+| `exp6` | 魔鬼等级2：鸠占鹊巢陷阱 | p=500, 噪声诱饵与真信号ρ=0.8 |
+| `exp7` | 魔鬼等级3：AR(1)符号雪崩 | p=500, 相邻符号相反β衰减 |
+| `all` | 运行全部7个场景 | — |
+
+### 支持的算法
+
+`原始UniLasso`、`标准Lasso`、`XLasso-Soft`、`XLasso-GroupDecomp`、`XLasso-Full`、`Adaptive Lasso`、`Fused Lasso`、`Group Lasso`、`Adaptive Sparse Group Lasso`
+
+### 任务类型（`--family`）
+
+`gaussian`（回归）、`binomial`（二分类）、`all`
+
+### 运行示例
+
 ```bash
-cd /home/lili/lyn/clear/XLasso/lab
-# 默认运行5次重复实验
-python experiment_001.py
+# 运行全部实验（高斯+二分类）
+python run_simulation_experiments.py -e all -n 3
 
-# 指定重复次数（例如运行50次正式实验）
-python experiment_001.py --n-repeats 50
-# 或简写
-python experiment_001.py -n 50
+# 只跑魔鬼等级1实验，3次重复
+python run_simulation_experiments.py -e exp5 -n 3
+
+# 只跑XLasso-Full算法，二分类任务
+python run_simulation_experiments.py -e all -a "XLasso-Full" -f binomial
+
+# 调试模式（2次重复，100特征）
+python run_simulation_experiments.py -e exp1 --debug
 ```
 
-### 命令行参数说明
-| 参数 | 缩写 | 类型 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| --n-repeats | -n | int | 5 | 实验重复次数 |
-| --sigmas | - | float列表 | 0.5 1.0 2.5 | 噪声标准差列表（多个值用空格分隔） |
-| --family | - | str | gaussian | GLM家族类型：gaussian/binomial/poisson/multinomial/cox |
-| --n-folds | - | int | 5 | 交叉验证折数 |
-| --seed | - | int | 42 | 随机种子 |
-| --backend | - | str | numba | 求解器后端：numba（高速）/pytorch（灵活） |
-| --group-penalty | - | float | 5.0 | 组一致性惩罚强度 |
-| --corr-threshold | - | float | 0.7 | 分组相关系数阈值 |
-| --weight-method | - | str | p_value | 显著性权重计算方法：t_statistic/p_value/correlation |
-| --alpha | - | float | 1.0 | XLasso alpha参数（显著变量负惩罚强度） |
-| --beta | - | float | 1.0 | XLasso beta参数（不显著变量惩罚强度） |
+### 输出结构
 
----
+每个算法单独目录 `{01_原始UniLasso, 02_标准Lasso, ...}/`，含 `_raw.csv`（每次重复详情）和 `_summary.csv`（均值汇总）。
 
-## 实验2：AR(1)相关稀疏回归
+### 参数选择策略
 
-### 运行命令
-```bash
-cd /home/lili/lyn/clear/XLasso/lab
-# 默认运行5次重复实验
-python experiment_002.py
+**核心原则：按场景固定结构参数，仅动态选择 λ**
 
-# 指定重复次数和AR(1)相关系数
-python experiment_002.py --n-repeats 50 --rho 0.8
-```
+XLasso的参数分为两类：
+- **结构参数**（场景相关，实验中固定）：`k`(γ)、`enable_group_decomp`、`group_corr_threshold`、`enable_group_aware_filter` 等，在实验中保持不变
+- **正则化参数**（所有场景统一处理）：通过3折交叉验证在验证集上动态选择最优 λ
 
-### 命令行参数说明
-**公共参数和实验1完全一致，额外新增参数：**
-| 参数 | 缩写 | 类型 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| --rho | - | float | 0.8 | AR(1)相关系数，控制变量间相邻相关性强度 |
+#### XLasso系列算法
+
+| 算法 | 结构参数 | λ选择方式 |
+|------|----------|------------|
+| `XLasso-Soft` | `k=1.0`, 无组分解 | cv_uni 3折CV |
+| `XLasso-Soft-γ0.5` | `k=0.5`, 无组分解 | cv_uni 3折CV |
+| `XLasso-Soft-γ2.0` | `k=2.0`, 无组分解 | cv_uni 3折CV |
+| `XLasso-GroupDecomp` | `k=1.0`, 组分解, thresh=0.7 | cv_uni 3折CV |
+| `XLasso-Full` | `k=1.0`, 组分解+感知过滤, thresh=0.7 | cv_uni 3折CV |
+
+> **说明**：`k` 参数控制非对称惩罚的强度，k=0.5 表示弱非对称（接近对称Lasso），k=2.0 表示强非对称（对负系数更敏感）。不同 k 变体用于评估XLasso对惩罚强度选择的鲁棒性。
+
+#### sklearn类算法（通过交叉验证自动选优）
+
+| 算法 | 调参方式 |
+|------|----------|
+| `标准Lasso` | `LogisticRegressionCV(cv=3)` / `LassoCV(cv=3)` 自动选最优lambda |
+| `Adaptive Lasso` | CV在 `gammas=[0.5, 1.0, 2.0]` 中选最优gamma |
+| `Fused Lasso` | CV在 `lambda_fused_ratios=[0.1, 0.5, 1.0, 2.0]` 中选最优 |
+| `Group Lasso` / `Adaptive Sparse Group Lasso` | CV自动选最优 |
 
 ### 编程习惯约定
 > **所有实验脚本均采用「配置+命令行参数」设计模式**：
