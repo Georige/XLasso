@@ -109,13 +109,12 @@ def construct_X_loo(
         # 计算单变量Ridge的帽子对角元 h_jj = X_j^T (X_j X_j^T + λI)^{-1} X_j
         h_diag = XTX_diag / (XTX_diag + lambda_ridge + 1e-10)
 
-        # 计算单变量Ridge残差
-        y_pred_single = X_centered * beta_single + y_mean
-        residuals_single = y - y_pred_single
-
-        # 快速近似LOO预测值
+        # 计算单变量Ridge残差和LOO预测值
         for j in range(p):
-            y_loo_j = (residuals_single[:, j] / (1 - np.clip(h_diag[j], 1e-10, 1 - 1e-10))) + y_pred_single[:, j]
+            # 对每个特征单独计算
+            y_pred_j = X_centered[:, j] * beta_single[j] + y_mean
+            residual_j = y - y_pred_j
+            y_loo_j = (residual_j / (1 - np.clip(h_diag[j], 1e-10, 1 - 1e-10))) + y_pred_j
             X_loo[:, j] = y_loo_j
 
     return X_loo, beta_ridge

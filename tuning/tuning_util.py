@@ -86,6 +86,7 @@ STAGE1_PARAM_SPACE = {
     'gamma': [0.1, 0.3, 0.5, 0.7, 1.0],  # 权重指数映射陡峭程度
     's': [0.5, 1.0, 1.5, 2.0],  # 全局惩罚缩放因子
     'group_threshold': [0.5, 0.6, 0.7, 0.8, 0.9],  # 相关性分组阈值
+    'group_truncation_threshold': [0.0, 0.3, 0.5, 0.7],  # 组感知截断阈值
 }
 
 # Stage1固定的lambda值
@@ -299,11 +300,12 @@ def run_single_tuning_experiment(
             print(f"  Repeat {repeat+1}/{n_repeats}, seed={seed}")
 
         # 生成数据
+        np.random.seed(seed)
         if family == "gaussian":
-            X, y, beta_true = generator(seed=seed, return_truth=True)
+            X, y, beta_true = generator(family='gaussian')
             is_classification = False
         else:
-            X, y, beta_true = generator(seed=seed, return_truth=True, family="binomial")
+            X, y, beta_true = generator(family='binomial')
             is_classification = True
 
         # 训练模型
