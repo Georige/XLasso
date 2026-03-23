@@ -166,6 +166,30 @@ def create_wrapper(algorithm_class, is_classification=False, **kwargs):
     return AutoWrapper(algorithm_class, is_classification, **kwargs)
 
 
+class NumpyEncoder(json.JSONEncoder):
+    """处理numpy类型的JSON编码器"""
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.generic):
+            return obj.item()
+        return super().default(obj)
+
+
+def convert_numpy_types(obj):
+    """将字典中的numpy类型转换为Python原生类型"""
+    if isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(v) for v in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.generic):
+        return obj.item()
+    else:
+        return obj
+
+
 class ResultSaver:
     """结果保存器"""
 
@@ -192,7 +216,7 @@ class ResultSaver:
         """保存实验配置"""
         self.config = config
         with open(self.experiment_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+            json.dump(config, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
 
     def save_algorithm_results(self, algo_name, algo_params, raw_results, summary):
         """
@@ -217,8 +241,9 @@ class ResultSaver:
         summary.to_csv(algo_dir / "summary.csv")
 
         # 保存参数配置
+        algo_params_converted = convert_numpy_types(algo_params)
         with open(algo_dir / "params.json", "w", encoding="utf-8") as f:
-            json.dump(algo_params, f, indent=2, ensure_ascii=False)
+            json.dump(algo_params_converted, f, indent=2, ensure_ascii=False)
 
         return algo_dir
 
@@ -498,25 +523,25 @@ def get_algorithm_list(task_type='regression'):
             'random_state': 2026
         }, False)
 
-        # 本地CV实现（自动调参）
-        algorithms['Adaptive_LassoCV'] = (AdaptiveLassoCV, {
-            'gammas': [0.5, 1.0, 2.0], 'cv': 3,
-            'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
-        }, False)
+        # 本地CV实现（自动调参）- 暂时注释，后续优化后再开启
+        # algorithms['Adaptive_LassoCV'] = (AdaptiveLassoCV, {
+        #     'gammas': [0.5, 1.0, 2.0], 'cv': 3,
+        #     'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
+        # }, False)
 
-        algorithms['Fused_LassoCV'] = (FusedLassoCV, {
-            'lambda_fused_ratios': [0.1, 0.5, 1.0, 2.0], 'cv': 3,
-            'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
-        }, False)
+        # algorithms['Fused_LassoCV'] = (FusedLassoCV, {
+        #     'lambda_fused_ratios': [0.1, 0.5, 1.0, 2.0], 'cv': 3,
+        #     'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
+        # }, False)
 
-        algorithms['Group_LassoCV'] = (GroupLassoCV, {
-            'cv': 3, 'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
-        }, False)
+        # algorithms['Group_LassoCV'] = (GroupLassoCV, {
+        #     'cv': 3, 'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
+        # }, False)
 
-        algorithms['Adaptive_Sparse_Group_LassoCV'] = (AdaptiveSparseGroupLassoCV, {
-            'l1_ratios': [0.1, 0.5, 0.9], 'gamma': 1.0, 'cv': 3,
-            'max_iter': 500, 'tol': 1e-4, 'n_jobs': -1
-        }, False)
+        # algorithms['Adaptive_Sparse_Group_LassoCV'] = (AdaptiveSparseGroupLassoCV, {
+        #     'l1_ratios': [0.1, 0.5, 0.9], 'gamma': 1.0, 'cv': 3,
+        #     'max_iter': 500, 'tol': 1e-4, 'n_jobs': -1
+        # }, False)
 
         # skglm 系列（暂时保留固定参数版本，skglm的CV使用GeneralizedLinearEstimatorCV）
         try:
@@ -549,9 +574,10 @@ def get_algorithm_list(task_type='regression'):
             'n_jobs': -1, 'random_state': 2026
         }, True)
 
-        algorithms['Adaptive_LogisticCV'] = (AdaptiveLassoCV, {
-            'gammas': [0.5, 1.0, 2.0], 'family': 'binomial',
-            'cv': 3, 'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
-        }, True)
+        # 本地CV实现（自动调参）- 暂时注释，后续优化后再开启
+        # algorithms['Adaptive_LogisticCV'] = (AdaptiveLassoCV, {
+        #     'gammas': [0.5, 1.0, 2.0], 'family': 'binomial',
+        #     'cv': 3, 'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1
+        # }, True)
 
     return algorithms
