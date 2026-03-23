@@ -1,18 +1,18 @@
 """
-API层：XLasso交叉验证自动调参版本
+API层：NLasso交叉验证自动调参版本
 自动搜索最优超参数组合
 """
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 from sklearn.model_selection import GridSearchCV, KFold, StratifiedKFold
 from sklearn.metrics import get_scorer
-from .xlasso import XLasso, XLassoClassifier
+from .nlasso import NLasso, NLassoClassifier
 from ..base import _DTYPE
 
 
-class XLassoCV(BaseEstimator, RegressorMixin):
+class NLassoCV(BaseEstimator, RegressorMixin):
     """
-    XLasso 交叉验证版本（回归）
+    NLasso 交叉验证版本（回归）
     自动搜索最优超参数组合，支持多参数并行调参
     """
     def __init__(
@@ -60,7 +60,7 @@ class XLassoCV(BaseEstimator, RegressorMixin):
         拟合模型并执行交叉验证调参
         """
         # 创建基础估计器
-        base_estimator = XLasso(
+        base_estimator = NLasso(
             random_state=self.random_state,
             verbose=self.verbose,
             **self.fixed_params
@@ -127,9 +127,9 @@ class XLassoCV(BaseEstimator, RegressorMixin):
         return self.best_estimator_.groups_
 
 
-class XLassoClassifierCV(BaseEstimator, ClassifierMixin):
+class NLassoClassifierCV(BaseEstimator, ClassifierMixin):
     """
-    XLasso 交叉验证版本（分类）
+    NLasso 交叉验证版本（分类）
     自动搜索最优超参数组合，支持多参数并行调参
     """
     def __init__(
@@ -180,7 +180,7 @@ class XLassoClassifierCV(BaseEstimator, ClassifierMixin):
         self.classes_ = np.unique(y)
 
         # 创建基础估计器
-        base_estimator = XLassoClassifier(
+        base_estimator = NLassoClassifier(
             random_state=self.random_state,
             verbose=self.verbose,
             **self.fixed_params

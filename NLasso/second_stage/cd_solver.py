@@ -67,8 +67,8 @@ def cd_solve(
             # 等价于 (X_j^T residuals / n) + theta_old * XTX_diag[j]
             z_j = np.dot(X[:, j], residuals) / n_float + theta_old * XTX_diag[j]
 
-            # 非对称软阈值
-            theta_new = asymmetric_soft_threshold(z_j, w_plus, w_minus, lambda_)
+            # 非对称软阈值，注意需要除以XTX_diag[j]
+            theta_new = asymmetric_soft_threshold(z_j, w_plus, w_minus, lambda_) / XTX_diag[j]
 
             # 更新系数
             theta[j] = theta_new
@@ -81,8 +81,7 @@ def cd_solve(
 
         # 检查收敛
         if max_change < tol:
-            if verbose:
-                print(f"Converged in {iteration + 1} iterations, max change = {max_change:.6f}")
+            # Numba nopython模式下不支持复杂字符串格式化，verbose打印移到外部
             break
 
     # 计算最终目标函数值

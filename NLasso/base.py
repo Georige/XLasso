@@ -1,5 +1,5 @@
 """
-XLasso 基类定义
+NLasso 基类定义
 遵循 scikit-learn Estimator 接口规范，性能优先设计
 """
 import numpy as np
@@ -13,27 +13,33 @@ _COPY_WHEN_POSSIBLE = False  # 优先使用视图而非拷贝
 _DTYPE = np.float64  # 统一数值精度，平衡速度与精度
 
 
-class BaseXLasso(BaseEstimator, ABC):
-    """XLasso 基类，包含所有变体共享的参数与逻辑"""
+class BaseNLasso(BaseEstimator, ABC):
+    """NLasso 基类，包含所有变体共享的参数与逻辑"""
 
     def __init__(
         self,
-        lambda_ridge: float = 10.0,  # 第一阶段强Ridge正则化强度（大值优先）
-        gamma: float = 0.3,  # 权重指数映射陡峭程度（paper推荐默认0.3）
-        s: float = 1.0,  # 全局惩罚缩放因子
-        group_threshold: float = 0.7,  # 相关性分组阈值
+        lambda_ridge: float = 10.0,
+        lambda_: float = None,
+        lambda_path: list = None,
+        n_lambda: int = 50,
+        gamma: float = 0.3,
+        s: float = 1.0,
+        group_threshold: float = 0.7,
         group_min_size: int = 2,
         group_max_size: int = 10,
-        max_iter: int = 1000,  # 求解器最大迭代次数
-        tol: float = 1e-4,  # 收敛阈值
-        standardize: bool = True,  # 是否标准化特征
-        fit_intercept: bool = True,  # 是否拟合截距项
-        n_jobs: int = -1,  # 并行线程数，-1使用所有CPU
+        max_iter: int = 1000,
+        tol: float = 1e-4,
+        standardize: bool = True,
+        fit_intercept: bool = True,
+        n_jobs: int = -1,
         random_state: int = 2026,
         verbose: bool = False,
     ):
-        # 超参数
+        # 超参数（注意：所有参数必须显式保存为属性，且名称与__init__参数完全一致）
         self.lambda_ridge = lambda_ridge
+        self.lambda_ = lambda_
+        self.lambda_path = lambda_path
+        self.n_lambda = n_lambda
         self.gamma = gamma
         self.s = s
         self.group_threshold = group_threshold
@@ -47,7 +53,47 @@ class BaseXLasso(BaseEstimator, ABC):
         self.random_state = random_state
         self.verbose = verbose
 
-        # 拟合后属性
+        # 初始化拟合后属性
+        self._init_fitted_attributes()
+
+    def get_params(self, deep: bool = True) -> dict:
+        """
+        重写get_params以确保sklearn能正确识别所有参数
+        解决ABC多重继承导致的参数识别问题
+        """
+        params = {
+            'lambda_ridge': self.lambda_ridge,
+            'lambda_': self.lambda_,
+            'lambda_path': self.lambda_path,
+            'n_lambda': self.n_lambda,
+            'gamma': self.gamma,
+            's': self.s,
+            'group_threshold': self.group_threshold,
+            'group_min_size': self.group_min_size,
+            'group_max_size': self.group_max_size,
+            'max_iter': self.max_iter,
+            'tol': self.tol,
+            'standardize': self.standardize,
+            'fit_intercept': self.fit_intercept,
+            'n_jobs': self.n_jobs,
+            'random_state': self.random_state,
+            'verbose': self.verbose,
+        }
+        return params
+
+    def set_params(self, **params):
+        """
+        重写set_params以确保sklearn能正确设置所有参数
+        """
+        for key, value in params.items():
+            if key in self.get_params():
+                setattr(self, key, value)
+            else:
+                raise ValueError(f"Invalid parameter '{key}' for estimator {self.__class__.__name__}")
+        return self
+
+    def _init_fitted_attributes(self):
+        """初始化拟合后属性"""
         self.coef_ = None  # 原始特征空间系数 (p,)
         self.intercept_ = 0.0  # 截距项
         self.scaler_ = None  # 特征标准化器
@@ -94,7 +140,7 @@ class BaseXLasso(BaseEstimator, ABC):
 
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
         """
-        拟合XLasso模型
+        拟合NLasso模型
         Args:
             X: 特征矩阵 (n_samples, n_features)
             y: 响应变量 (n_samples,)
@@ -208,15 +254,15 @@ class BaseXLasso(BaseEstimator, ABC):
         }
 
 
-class XLassoRegressor(BaseXLasso, RegressorMixin):
-    """XLasso 回归器"""
+class NLassoRegressor(BaseNLasso, RegressorMixin):
+    """NLasso 回归器"""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.task_type_ = 'regression'
 
 
-class XLassoClassifier(BaseXLasso, ClassifierMixin):
-    """XLasso 分类器"""
+class NLassoClassifier(BaseNLasso, ClassifierMixin):
+    """NLasso 分类器"""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.task_type_ = 'classification'
@@ -226,7 +272,7 @@ class XLassoClassifier(BaseXLasso, ClassifierMixin):
         # 分类任务额外处理类别
         self.classes_ = np.unique(y)
         if len(self.classes_) != 2:
-            raise ValueError("XLassoClassifier currently only supports binary classification")
+            raise ValueError("NLassoClassifier currently only supports binary classification")
         # 将y转为0/1编码
         y = (y == self.classes_[1]).astype(_DTYPE)
         return super().fit(X, y, sample_weight)
