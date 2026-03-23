@@ -1528,15 +1528,15 @@ def cv_uni(
     group_weights_arr = None
     groups = None
 
-    if adaptive_weighting or enable_group_constraint:
-        # 构建单变量结果字典
-        univariate_results = {
-            'beta': beta_coefs_fit,
-            't_stats': np.ones_like(beta_coefs_fit),
-            'p_values': np.ones_like(beta_coefs_fit),
-            'correlations': np.zeros_like(beta_coefs_fit)
-        }
+    # 始终构建univariate_results（当adaptive_weighting=False时使用均匀权重）
+    univariate_results = {
+        'beta': beta_coefs_fit,
+        't_stats': np.ones_like(beta_coefs_fit),
+        'p_values': np.ones_like(beta_coefs_fit),
+        'correlations': np.zeros_like(beta_coefs_fit)
+    }
 
+    if adaptive_weighting or enable_group_constraint:
         # 计算特征相关性
         if X.shape[1] > 0:
             if X.shape[1] > 1:
@@ -1592,7 +1592,7 @@ def cv_uni(
         for j in range(n_features):
             p_j = univariate_results['p_values'][j]
             # 新权重公式：w_j = 0.5 * p_j^k
-            wj = 0.5 * (p_j ** k)
+            wj = 0.5 * (p_j ** gamma)
             wp = wj
             wm = 1.0 - wj
             w_plus[j] = wp
@@ -2129,6 +2129,9 @@ def fit_uni(
     # 正交分量逆变换（如果开启了组分解/正交分解）
     decomp_enabled = enable_group_decomp or enable_orthogonal_decomp
     if decomp_enabled and len(transformation_info) > 0:
+        # 确保 gamma_hat 是 2D 数组 (n_lmdas, n_features)
+        if gamma_hat.ndim == 1:
+            gamma_hat = gamma_hat.reshape(1, -1)
         n_lmdas, n_features = gamma_hat.shape
         gamma_hat_original = gamma_hat.copy()
 
