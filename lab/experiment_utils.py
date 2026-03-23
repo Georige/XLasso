@@ -14,7 +14,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from unilasso.uni_lasso import fit_uni
+from unilasso.uni_lasso import fit_uni, cv_uni
 from other_lasso import (
     AdaptiveLassoCV, GroupLassoCV, FusedLassoCV,
     AdaptiveSparseGroupLassoCV
@@ -25,7 +25,7 @@ from sklearn.linear_model import LassoCV, LogisticRegressionCV
 # 实验配置
 # ------------------------------------------------------------------------------
 EXPERIMENT_CONFIG = {
-    'random_state': 42,
+    'random_state': 2026,  # 基准随机种子，重复n次对应种子为2026~2026+n-1
     'n_repeats': 3,  # 每个实验重复次数，优化后减少到3次加速运行
     'test_size': 0.3,
     'cv_folds': 3,  # 交叉验证折数
@@ -37,6 +37,7 @@ EXPERIMENT_CONFIG = {
 }
 
 # 算法配置（按用户指定优先级排序：UniLasso → Lasso → XLasso全系 → Adaptive Lasso → Fused Lasso → Group Lasso → Adaptive Sparse Group Lasso）
+# 调参原则：按场景固定结构参数(k/enable_group_decomp等)，仅动态选择λ
 ALGORITHMS = {
     # 优先级1: 原始UniLasso
     '原始UniLasso': {
@@ -62,41 +63,64 @@ ALGORITHMS = {
         'task_type': ['classification', 'regression']  # 回归用LassoCV
     },
 
-    # 优先级3: XLasso全系
+    # 优先级3: XLasso全系（结构参数固定，仅λ通过cv_uni做3折交叉验证）
+    # 调参原则：按场景固定结构参数(k/enable_group_decomp等)，仅动态选择λ
     'XLasso-Soft': {
-        'class': 'xlasso',
+        'class': 'xlasso_cv',
         'params': {
             'enable_group_decomp': False,
-            'k': 1.0,
+            'k': 1.0,                   # 结构参数：中等非对称惩罚强度
             'lmda_min_ratio': 1e-2,
-            'lmda_scale': 1.0,
             'n_lmdas': 100,
+            'cv_folds': EXPERIMENT_CONFIG['cv_folds'],
+        },
+        'task_type': ['classification', 'regression']
+    },
+    'XLasso-Soft-γ0.5': {
+        'class': 'xlasso_cv',
+        'params': {
+            'enable_group_decomp': False,
+            'k': 0.5,                   # 结构参数：弱非对称，接近对称Lasso
+            'lmda_min_ratio': 1e-2,
+            'n_lmdas': 100,
+            'cv_folds': EXPERIMENT_CONFIG['cv_folds'],
+        },
+        'task_type': ['classification', 'regression']
+    },
+    'XLasso-Soft-γ2.0': {
+        'class': 'xlasso_cv',
+        'params': {
+            'enable_group_decomp': False,
+            'k': 2.0,                   # 结构参数：强非对称，对负系数更敏感
+            'lmda_min_ratio': 1e-2,
+            'n_lmdas': 100,
+            'cv_folds': EXPERIMENT_CONFIG['cv_folds'],
         },
         'task_type': ['classification', 'regression']
     },
     'XLasso-GroupDecomp': {
-        'class': 'xlasso',
+        'class': 'xlasso_cv',
         'params': {
             'enable_group_decomp': True,
             'group_corr_threshold': 0.7,
             'enable_group_aware_filter': False,
-            'k': 1.0,
+            'k': 1.0,                   # 结构参数：启用组级正交分解
             'lmda_min_ratio': 1e-2,
-            'lmda_scale': 1.0,
             'n_lmdas': 100,
+            'cv_folds': EXPERIMENT_CONFIG['cv_folds'],
         },
         'task_type': ['classification', 'regression']
     },
     'XLasso-Full': {
-        'class': 'xlasso',
+        'class': 'xlasso_cv',
         'params': {
             'enable_group_decomp': True,
             'group_corr_threshold': 0.7,
             'enable_group_aware_filter': True,
-            'k': 1.0,
+            'k': 1.0,                   # 结构参数：启用组分解+感知过滤
             'lmda_min_ratio': 1e-2,
-            'lmda_scale': 1.0,
             'n_lmdas': 100,
+            'cv_folds': EXPERIMENT_CONFIG['cv_folds'],
         },
         'task_type': ['classification', 'regression']
     },
@@ -430,22 +454,60 @@ def calculate_metrics(y_true, y_pred, y_prob=None, beta_true=None, beta_pred=Non
 # ------------------------------------------------------------------------------
 # 算法运行函数
 # ------------------------------------------------------------------------------
-def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian', groups=None, beta_true=None):
-    """运行单个算法"""
+def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian', groups=None, beta_true=None, scaler=None, alg_config_override=None):
+    """运行单个算法
+
+    Args:
+        alg_config_override: 可选，传入配置字典覆盖ALGORITHMS中的默认配置，
+                            用于网格搜索时动态传入不同参数组合
+    """
     try:
-        alg_config = ALGORITHMS[alg_name]
+        alg_config = alg_config_override if alg_config_override is not None else ALGORITHMS[alg_name]
         params = alg_config['params'].copy()
         params['family'] = family
 
         if alg_config['class'] == 'xlasso':
-            # XLasso算法
+            # XLasso算法（固定lambda或取路径中间值）
+            # lmda（单值，网格搜索用）映射为lmdas供fit_uni使用
+            fixed_lmda = params.pop('lmda', None)
+            if fixed_lmda is not None:
+                params['lmdas'] = fixed_lmda
+            # k参数映射为gamma（fit_uni用gamma而非k作为权重指数）
+            if 'k' in params:
+                gamma_val = params.pop('k')
+                params['gamma'] = gamma_val
+                params['adaptive_weighting'] = True
             result = fit_uni(X_train, y_train, **params)
-            # 选择最优lambda：取中间位置（实际应该用CV，这里简化处理）
-            best_idx = len(result.lmdas) // 2
-            coef = result.coefs[best_idx]
-            intercept = result.intercept[best_idx]
+            # 单lambda时coefs可能为1D或2D，需要统一处理
+            if len(result.lmdas) == 1:
+                coef = result.coefs.squeeze()
+                intercept = result.intercept.squeeze() if isinstance(result.intercept, np.ndarray) else result.intercept
+            else:
+                best_idx = len(result.lmdas) // 2
+                coef = result.coefs[best_idx]
+                intercept = result.intercept[best_idx]
 
-            # 预测
+            z = X_test @ coef + intercept
+            if family == 'gaussian':
+                y_pred = z
+                y_prob = None
+            else:
+                y_prob = 1 / (1 + np.exp(-z))
+                y_pred = (y_prob >= 0.5).astype(int)
+
+        elif alg_config['class'] == 'xlasso_cv':
+            # XLasso算法（使用cv_uni做lambda交叉验证）
+            cv_folds = params.pop('cv_folds')
+            params.pop('lmda_scale', None)  # cv_uni不支持lmda_scale，直接丢弃
+            # k参数映射为gamma（cv_uni用gamma而非k命名）
+            gamma_val = params.pop('k', 1.0)
+            params['gamma'] = gamma_val
+            # gamma只在adaptive_weighting=True时生效，需要显式开启
+            params['adaptive_weighting'] = True
+            result = cv_uni(X_train, y_train, n_folds=cv_folds, **params)
+            coef = result.coefs[result.best_idx].squeeze()
+            intercept = result.intercept[result.best_idx].squeeze()
+
             z = X_test @ coef + intercept
             if family == 'gaussian':
                 y_pred = z
@@ -514,7 +576,7 @@ def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian',
         metrics = calculate_metrics(y_test, y_pred, y_prob, task_type='regression' if family == 'gaussian' else 'classification')
         metrics['n_selected'] = np.sum(np.abs(coef) > 1e-8)
 
-        # 计算变量选择指标（如果有真实系数）
+        # 计算变量选择指标和估计误差（如果有真实系数）
         if beta_true is not None:
             beta_true_nonzero = np.abs(beta_true) > 1e-8
             beta_pred_nonzero = np.abs(coef) > 1e-8
@@ -525,6 +587,13 @@ def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian',
             metrics['tpr'] = tp / (tp + fn) if (tp + fn) > 0 else 0.0
             metrics['fdr'] = fp / (tp + fp) if (tp + fp) > 0 else 0.0
             metrics['f1'] = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+
+            # 估计误差：coef来自标准化数据，需要反标准化后与原始beta_true比较
+            if hasattr(scaler, 'scale_') and scaler.scale_ is not None:
+                coef_original = coef / scaler.scale_
+                metrics['est_error'] = mean_squared_error(beta_true, coef_original)
+            else:
+                metrics['est_error'] = mean_squared_error(beta_true, coef)
 
         metrics['success'] = True
 
