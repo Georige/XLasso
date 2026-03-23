@@ -206,7 +206,7 @@ class NLasso(BaseNLassoRegressor):
             groups=transform_info['groups'],
             decomposers=transform_info['decomposers'],
             p_original=transform_info['p_original'],
-            group_truncation_threshold=0.5,
+            group_truncation_threshold=self.group_truncation_threshold,
             epsilon=1e-6
         )
 

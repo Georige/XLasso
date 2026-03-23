@@ -27,6 +27,7 @@ class BaseNLasso(BaseEstimator, ABC):
         group_threshold: float = 0.7,
         group_min_size: int = 2,
         group_max_size: int = 10,
+        group_truncation_threshold: float = 0.5,
         max_iter: int = 1000,
         tol: float = 1e-4,
         standardize: bool = True,
@@ -45,6 +46,7 @@ class BaseNLasso(BaseEstimator, ABC):
         self.group_threshold = group_threshold
         self.group_min_size = group_min_size
         self.group_max_size = group_max_size
+        self.group_truncation_threshold = group_truncation_threshold
         self.max_iter = max_iter
         self.tol = tol
         self.standardize = standardize
@@ -71,6 +73,7 @@ class BaseNLasso(BaseEstimator, ABC):
             'group_threshold': self.group_threshold,
             'group_min_size': self.group_min_size,
             'group_max_size': self.group_max_size,
+            'group_truncation_threshold': self.group_truncation_threshold,
             'max_iter': self.max_iter,
             'tol': self.tol,
             'standardize': self.standardize,
