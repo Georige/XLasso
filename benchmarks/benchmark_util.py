@@ -519,15 +519,8 @@ def get_algorithm_list(task_type='regression'):
 
     class UniLassoCV(BaseEstimator, RegressorMixin):
         """UniLasso CV wrapper for regression"""
-        def __init__(self, lambda_ridge=None, gamma=None, s=1.0, n_alphas=50, cv=3,
-                     max_iter=1000, tol=1e-4, random_state=2026, family='gaussian'):
-            self.lambda_ridge = lambda_ridge
-            self.gamma = gamma
-            self.s = s
-            self.n_alphas = n_alphas
+        def __init__(self, cv=3, random_state=2026, family='gaussian'):
             self.cv = cv
-            self.max_iter = max_iter
-            self.tol = tol
             self.random_state = random_state
             self.family = family
             self.result_ = None
@@ -542,14 +535,8 @@ def get_algorithm_list(task_type='regression'):
             # 调用cv_unilasso
             self.result_ = cv_unilasso(
                 X, y,
-                lambda_ridge=self.lambda_ridge,
-                gamma=self.gamma,
-                s=self.s,
-                n_alphas=self.n_alphas,
-                cv=self.cv,
-                max_iter=self.max_iter,
-                tol=self.tol,
-                random_state=self.random_state,
+                n_folds=self.cv,
+                seed=self.random_state,
                 family=self.family,
                 verbose=False
             )
@@ -575,13 +562,7 @@ def get_algorithm_list(task_type='regression'):
 
         # UniLasso
         algorithms['UniLassoCV'] = (UniLassoCV, {
-            'lambda_ridge': 50.0,
-            'gamma': 1.0,
-            's': 1.0,
-            'n_alphas': 50,
             'cv': 3,
-            'max_iter': 1000,
-            'tol': 1e-4,
             'random_state': 2026,
             'family': 'gaussian'
         }, False)
@@ -640,15 +621,8 @@ def get_algorithm_list(task_type='regression'):
         # UniLasso for classification
         class UniLassoCVC(BaseEstimator, ClassifierMixin):
             """UniLasso CV wrapper for classification"""
-            def __init__(self, lambda_ridge=None, gamma=None, s=1.0, n_alphas=50, cv=3,
-                         max_iter=1000, tol=1e-4, random_state=2026, family='binomial'):
-                self.lambda_ridge = lambda_ridge
-                self.gamma = gamma
-                self.s = s
-                self.n_alphas = n_alphas
+            def __init__(self, cv=3, random_state=2026, family='binomial'):
                 self.cv = cv
-                self.max_iter = max_iter
-                self.tol = tol
                 self.random_state = random_state
                 self.family = family
                 self.result_ = None
@@ -664,14 +638,8 @@ def get_algorithm_list(task_type='regression'):
                 # 调用cv_unilasso
                 self.result_ = cv_unilasso(
                     X, y,
-                    lambda_ridge=self.lambda_ridge,
-                    gamma=self.gamma,
-                    s=self.s,
-                    n_alphas=self.n_alphas,
-                    cv=self.cv,
-                    max_iter=self.max_iter,
-                    tol=self.tol,
-                    random_state=self.random_state,
+                    n_folds=self.cv,
+                    seed=self.random_state,
                     family=self.family,
                     verbose=False
                 )
@@ -694,13 +662,7 @@ def get_algorithm_list(task_type='regression'):
                 return np.column_stack([1 - prob, prob])
 
         algorithms['UniLassoCVC'] = (UniLassoCVC, {
-            'lambda_ridge': 50.0,
-            'gamma': 1.0,
-            's': 1.0,
-            'n_alphas': 50,
             'cv': 3,
-            'max_iter': 1000,
-            'tol': 1e-4,
             'random_state': 2026,
             'family': 'binomial'
         }, True)
