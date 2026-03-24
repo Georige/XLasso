@@ -13,8 +13,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from experiment_utils import (
     EXPERIMENT_CONFIG, ALGORITHMS,
-    generate_experiment1_data, generate_experiment2_data, generate_experiment3_data, generate_experiment4_data,
-    run_algorithm, save_results
+    generate_experiment1_data, generate_experiment2_data, generate_experiment3_data,
+    generate_experiment4_data, generate_experiment5_data, generate_experiment6_data,
+    generate_experiment7_data, run_algorithm, save_results
 )
 from other_lasso import GroupLasso
 
@@ -38,7 +39,13 @@ PARAM_GRID = {
         'lmda_scale': [0.3, 0.5, 1.0],
         'group_corr_threshold': [0.6, 0.7, 0.8],
         'enable_group_aware_filter': [True],
-    }
+    },
+    'XLasso-PreDecomp': {
+        'corr_threshold': [0.4, 0.5, 0.6, 0.7],
+        'max_group_size': [15, 20],
+        'min_explained_variance_ratio': [0.7, 0.9],
+        'k': [0.3, 1.0, 2.0],
+    },
 }
 
 def parse_args():
@@ -47,7 +54,7 @@ def parse_args():
                         choices=PARAM_GRID.keys(),
                         help='要调优的算法')
     parser.add_argument('--experiment', '-e', type=str, default='exp2',
-                        choices=['exp1', 'exp2', 'exp3', 'exp4-2'],
+                        choices=['exp1', 'exp2', 'exp3', 'exp4', 'exp5', 'exp6', 'exp7'],
                         help='调优使用的实验场景')
     parser.add_argument('--n-repeats', '-n', type=int, default=3,
                         help='每个参数组合的重复次数')
@@ -61,7 +68,10 @@ def get_data_generator(exp_id):
         'exp1': ('高维成对相关稀疏回归', generate_experiment1_data, 'gaussian'),
         'exp2': ('AR(1)相关稀疏回归', generate_experiment2_data, 'gaussian'),
         'exp3': ('二分类偏移变量选择', generate_experiment3_data, 'binomial'),
-        'exp4-2': ('降维打击场景', generate_experiment4_data, 'binomial'),
+        'exp4': ('孪生变量反符号选择', generate_experiment4_data, 'gaussian'),
+        'exp5': ('魔鬼等级1-绝对隐身', generate_experiment5_data, 'gaussian'),
+        'exp6': ('魔鬼等级2-鸠占鹊巢', generate_experiment6_data, 'gaussian'),
+        'exp7': ('魔鬼等级3-AR(1)符号雪崩', generate_experiment7_data, 'gaussian'),
     }
     return generators[exp_id]
 
@@ -143,8 +153,8 @@ def main():
 
             if metrics['success']:
                 result_row = {
-                    'algorithm': alg_name,
-                    'experiment': exp_name,
+                    '算法': alg_name,
+                    '数据集': exp_name,
                     'repeat': repeat + 1,
                     **params,
                     **metrics

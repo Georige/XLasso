@@ -20,6 +20,7 @@ from other_lasso import (
     AdaptiveSparseGroupLassoCV
 )
 from sklearn.linear_model import LassoCV, LogisticRegressionCV
+from lab.preprocessing import GroupPreprocessor
 
 # ------------------------------------------------------------------------------
 # 实验配置
@@ -118,6 +119,21 @@ ALGORITHMS = {
             'group_corr_threshold': 0.7,
             'enable_group_aware_filter': True,
             'k': 1.0,                   # 结构参数：启用组分解+感知过滤
+            'lmda_min_ratio': 1e-2,
+            'n_lmdas': 100,
+            'cv_folds': EXPERIMENT_CONFIG['cv_folds'],
+        },
+        'task_type': ['classification', 'regression']
+    },
+
+    # XLasso with Pre-Decomposition (前置正交分解预处理)
+    'XLasso-PreDecomp': {
+        'class': 'xlasso_predecomp',
+        'params': {
+            'corr_threshold': 0.5,        # 相关性阈值
+            'max_group_size': 20,
+            'min_explained_variance_ratio': 0.7,
+            'k': 1.0,                   # gamma for adaptive weighting
             'lmda_min_ratio': 1e-2,
             'n_lmdas': 100,
             'cv_folds': EXPERIMENT_CONFIG['cv_folds'],
@@ -516,6 +532,44 @@ def run_algorithm(alg_name, X_train, y_train, X_test, y_test, family='gaussian',
                 y_prob = 1 / (1 + np.exp(-z))
                 y_pred = (y_prob >= 0.5).astype(int)
 
+        elif alg_config['class'] == 'xlasso_predecomp':
+            # XLasso with Pre-Decomposition (前置正交分解预处理)
+            cv_folds = params.pop('cv_folds')
+            corr_threshold = params.pop('corr_threshold', 0.5)
+            max_group_size = params.pop('max_group_size', 20)
+            min_explained_variance_ratio = params.pop('min_explained_variance_ratio', 0.7)
+            params.pop('lmda_scale', None)
+
+            # Create and fit preprocessor on X_train
+            preprocessor = GroupPreprocessor(
+                corr_threshold=corr_threshold,
+                max_group_size=max_group_size,
+                min_explained_variance_ratio=min_explained_variance_ratio,
+            )
+            X_train_trans = preprocessor.fit_transform(X_train)
+
+            # k参数映射为gamma
+            gamma_val = params.pop('k', 1.0)
+            params['gamma'] = gamma_val
+            params['adaptive_weighting'] = True
+
+            # Run cv_uni on transformed data
+            result = cv_uni(X_train_trans, y_train, n_folds=cv_folds, **params)
+            coef_trans = result.coefs[result.best_idx].squeeze()
+            intercept = result.intercept[result.best_idx].squeeze()
+
+            # Inverse transform coefficients to original space
+            coef = preprocessor.inverse_transform_coef(coef_trans)
+
+            # Prediction using original X_test (coefficients are now in original space)
+            z = X_test @ coef + intercept
+            if family == 'gaussian':
+                y_pred = z
+                y_prob = None
+            else:
+                y_prob = 1 / (1 + np.exp(-z))
+                y_pred = (y_prob >= 0.5).astype(int)
+
         else:
             # 其他算法
             params_copy = params.copy()
@@ -743,7 +797,9 @@ def save_results(results, experiment_name, config=None):
 
     # 6. 生成最新结果链接
     latest_dir = os.path.join(EXPERIMENT_CONFIG['save_dir'], 'latest')
-    if os.path.exists(latest_dir):
+    if os.path.islink(latest_dir):
+        os.unlink(latest_dir)
+    elif os.path.exists(latest_dir):
         import shutil
         shutil.rmtree(latest_dir)
     os.symlink(os.path.abspath(save_dir), latest_dir, target_is_directory=True)
