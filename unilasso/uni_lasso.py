@@ -222,56 +222,6 @@ def _greedy_correlation_grouping(
     return groups
 
 
-def _compute_group_penalty_weights(
-    groups: List[List[int]],
-    beta_univariate: np.ndarray,
-    feature_weights: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute group-level penalty weights and dominant signs.
-
-    Parameters
-    ----------
-    groups : List[List[int]]
-        List of feature groups
-    beta_univariate : np.ndarray
-        Univariate regression coefficients of shape (n_features,)
-    feature_weights : np.ndarray
-        Feature-level significance weights of shape (n_features,)
-
-    Returns
-    -------
-    group_signs : np.ndarray
-        Dominant sign for each group (+1 or -1) of shape (n_features,)
-    group_weights : np.ndarray
-        Group penalty weight for each feature of shape (n_features,)
-    """
-    n_features = len(beta_univariate)
-    group_signs = np.ones(n_features)
-    group_weights = np.ones(n_features)
-
-    for group in groups:
-        if len(group) == 0:
-            continue
-
-        # Compute weighted sign vote (weighted by absolute beta * feature weight)
-        betas = beta_univariate[group]
-        weights = feature_weights[group]
-        votes = np.sign(betas) * np.abs(betas) * weights
-        total_vote = np.sum(votes)
-
-        # Dominant sign is the sign of the total vote
-        dominant_sign = np.sign(total_vote) if total_vote != 0 else 1.0
-
-        # Group weight is proportional to the confidence of the dominant sign
-        confidence = np.abs(total_vote) / (np.sum(np.abs(votes)) + 1e-10)
-        group_weight = 1.0 + confidence * 4.0  # Scale from 1 to 5
-
-        # Assign to all features in the group
-        group_signs[group] = dominant_sign
-        group_weights[group] = group_weight
-
-    return group_signs, group_weights
 
 
 import numpy as np
@@ -1399,6 +1349,7 @@ def cv_uni(
     weight_max_scale: float = None,
     gamma: float = 1.0,
     sharp_scale: float = 0.0,
+    k: float = 1.0,  # 非对称惩罚权重调节系数
     # 新增：组约束参数 (与 fit_uni 一致)
     enable_group_constraint: bool = False,
     corr_threshold: float = 0.7,
@@ -1566,10 +1517,9 @@ def cv_uni(
             corr_matrix, corr_threshold, max_group_size
         )
 
-        # 计算组惩罚权重和符号
-        group_signs, group_weights_arr = _compute_group_penalty_weights(
-            groups, beta_coefs_fit, feature_weights
-        )
+        # 组惩罚增强模块已永久移除，所有组权重恒为1.0
+        group_signs = np.ones(len(beta_coefs_fit))
+        group_weights_arr = np.ones(len(beta_coefs_fit))
     else:
         group_signs = np.ones(len(beta_coefs_fit))
         group_weights_arr = np.ones(len(beta_coefs_fit))
@@ -1592,6 +1542,8 @@ def cv_uni(
         S_plus = 0.0
         S_minus = 0.0
 
+        # 临时修复：k参数未定义，使用k=1.0
+        k = 1.0
         for j in range(n_features):
             p_j = univariate_results['p_values'][j]
             # 新权重公式：w_j = 0.5 * p_j^k
@@ -2086,10 +2038,9 @@ def fit_uni(
             corr_matrix, corr_threshold, max_group_size
         )
 
-        # 计算组惩罚权重和符号
-        group_signs, group_weights_arr = _compute_group_penalty_weights(
-            groups, beta_coefs_fit, feature_weights
-        )
+        # 组惩罚增强模块已永久移除，所有组权重恒为1.0
+        group_signs = np.ones(len(beta_coefs_fit))
+        group_weights_arr = np.ones(len(beta_coefs_fit))
     else:
         group_signs = np.ones(len(beta_coefs_fit))
         group_weights_arr = np.ones(len(beta_coefs_fit))
