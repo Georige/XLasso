@@ -51,10 +51,10 @@ class OrthogonalDecomposer:
             self.is_fitted_ = True
             return self
 
-        # 标准化组内特征
-        self.mean_ = np.mean(X_group, axis=0)
-        self.std_ = np.std(X_group, axis=0) + 1e-10
-        X_std = (X_group - self.mean_) / self.std_
+        # 取消组内标准化：基类已经做了全局标准化，无需重复标准化
+        self.mean_ = np.zeros(k, dtype=_DTYPE)
+        self.std_ = np.ones(k, dtype=_DTYPE)
+        X_std = X_group.astype(_DTYPE)
 
         if self.custom_loadings is not None:
             # 自定义先验载荷模式（paper 3.4.5节）

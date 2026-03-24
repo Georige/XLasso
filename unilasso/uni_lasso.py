@@ -11,7 +11,10 @@ Reference: https://arxiv.org/abs/2501.18360
 import numpy as np
 import pandas as pd
 from numba import jit, prange
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 import adelie as ad
 
 

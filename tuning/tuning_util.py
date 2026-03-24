@@ -84,7 +84,7 @@ def convert_numpy_types(obj):
 STAGE1_PARAM_SPACE = {
     'lambda_ridge': [1.0, 5.0, 10.0, 20.0, 50.0],  # 第一阶段强Ridge正则化强度
     'gamma': [0.1, 0.3, 0.5, 0.7, 1.0],  # 权重指数映射陡峭程度
-    's': [0.5, 1.0, 1.5, 2.0],  # 全局惩罚缩放因子
+    's': [1.0],  # 全局惩罚缩放因子（固定为1）
     'group_threshold': [0.5, 0.6, 0.7, 0.8, 0.9],  # 相关性分组阈值
     'group_truncation_threshold': [0.0, 0.3, 0.5, 0.7],  # 组感知截断阈值
 }
@@ -222,17 +222,17 @@ class TuningResultSaver:
         overall_path = self.timestamp_dir / "overall_summary.csv"
         df_overall.to_csv(overall_path, index=False)
 
-        # 生成最优模型排名（按R²或准确率降序，FDR升序）
+        # 生成最优模型排名（按MSE升序或准确率降序，FDR升序）
         ranking_dfs = []
         for exp_id in df_overall['experiment_id'].unique():
             df_exp = df_overall[df_overall['experiment_id'] == exp_id].copy()
 
-            if 'r2' in df_exp.columns:
-                # 回归任务：优先按R²降序，再按FDR升序
-                df_exp = df_exp.sort_values(by=['r2', 'fdr'], ascending=[False, True])
-            elif 'accuracy' in df_exp.columns:
+            if 'mse_mean' in df_exp.columns:
+                # 回归任务：优先按MSE升序，再按FDR升序
+                df_exp = df_exp.sort_values(by=['mse_mean', 'fdr_mean'], ascending=[True, True])
+            elif 'accuracy_mean' in df_exp.columns:
                 # 分类任务：优先按准确率降序，再按FDR升序
-                df_exp = df_exp.sort_values(by=['accuracy', 'fdr'], ascending=[False, True])
+                df_exp = df_exp.sort_values(by=['accuracy_mean', 'fdr_mean'], ascending=[False, True])
 
             df_exp['rank'] = range(1, len(df_exp) + 1)
             ranking_dfs.append(df_exp)

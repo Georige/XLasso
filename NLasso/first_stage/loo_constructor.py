@@ -47,74 +47,44 @@ def construct_X_loo(
     ridge_full.fit(X, y)
     beta_ridge = ridge_full.beta_ridge_
 
-    if method == 'auto':
-        # 自动选择策略：特征数<200用精确法，否则用近似法
-        method = 'exact' if p < 200 else 'approx'
+    # 正确逻辑：全模型Ridge系数固定，拆分单变量模型计算LOO
+    if verbose:
+        print(f"[LOO Constructor] 使用全模型拆分方式构造X_loo, 特征数={p}")
 
-    if method == 'exact':
-        # 精确方法：对每个特征j，拟合单变量强Ridge计算LOO贡献
-        if verbose:
-            print(f"[LOO Constructor] 使用精确方法构造X_loo, 特征数={p}")
-
-        # 并行优化（如果n_jobs>1）
-        if n_jobs != 1 and p > 10:
-            from joblib import Parallel, delayed
-
-            def process_feature(j):
-                X_j = X[:, j:j+1]  # 单特征矩阵 (n,1)
-                ridge_j = build_ridge_estimator(
-                    task_type=task_type,
-                    alpha=lambda_ridge,
-                    random_state=random_state
-                )
-                ridge_j.fit(X_j, y)
-                return ridge_j.predict_loo()
-
-            results = Parallel(n_jobs=n_jobs, verbose=verbose)(
-                delayed(process_feature)(j) for j in range(p)
-            )
-            for j in range(p):
-                X_loo[:, j] = results[j]
-
-        else:
-            # 串行版本
-            for j in range(p):
-                X_j = X[:, j:j+1]
-                ridge_j = build_ridge_estimator(
-                    task_type=task_type,
-                    alpha=lambda_ridge,
-                    random_state=random_state
-                )
-                ridge_j.fit(X_j, y)
-                X_loo[:, j] = ridge_j.predict_loo()
-
-    else:
-        # 快速近似方法：利用全样本Ridge结果近似计算单特征LOO
-        # 核心假设：强Ridge下不同特征的拟合近似独立，误差可接受
-        if verbose:
-            print(f"[LOO Constructor] 使用近似方法构造X_loo, 特征数={p}")
-
-        # 中心化数据
+    if task_type == 'regression':
+        # 线性回归场景：严格按照官方设计实现
+        # 全模型Ridge已经得到beta_ridge，拆分为p个单变量固定系数模型
+        # 每个单变量模型：y_j = beta_ridge[j] * X_j，系数固定不重新拟合
         X_mean = np.mean(X, axis=0)
         y_mean = np.mean(y)
         X_centered = X - X_mean
         y_centered = y - y_mean
 
-        # 计算每个特征的单变量Ridge系数
-        # 单变量Ridge闭式解：beta_j = (X_j^T y) / (X_j^T X_j + λ)
+        # 对每个特征j，计算固定系数beta_ridge[j]的单变量模型留一预测值
+        # 帽子对角元：h_jj = X_j^T (X_j X_j^T + λI)^{-1} X_j
         XTX_diag = np.sum(X_centered ** 2, axis=0)
-        XTy = safe_sparse_dot(X_centered.T, y_centered)
-        beta_single = XTy / (XTX_diag + lambda_ridge + 1e-10)
-
-        # 计算单变量Ridge的帽子对角元 h_jj = X_j^T (X_j X_j^T + λI)^{-1} X_j
         h_diag = XTX_diag / (XTX_diag + lambda_ridge + 1e-10)
 
-        # 计算单变量Ridge残差和LOO预测值
+        # 计算每个特征的单变量预测值（固定全模型beta_ridge[j]）
+        y_pred_j = X_centered * beta_ridge + y_mean  # (n,p)
+
+        # 留一公式：y_loo_j = y - (y - y_pred_j) / (1 - h_jj)
+        residual = y.reshape(-1, 1) - y_pred_j  # (300,1) - (300,504) → (300,504)
+        correction = 1 / (1 - np.clip(h_diag, 1e-10, 1 - 1e-10)).reshape(1, -1)  # (1,504)
+        X_loo = y.reshape(-1, 1) - residual * correction  # (300,1) - (300,504)*(1,504) → (300,504)
+
+
+    else:
+        # 分类等其他场景：逐特征计算（复用全模型beta_ridge）
         for j in range(p):
-            # 对每个特征单独计算
-            y_pred_j = X_centered[:, j] * beta_single[j] + y_mean
-            residual_j = y - y_pred_j
-            y_loo_j = (residual_j / (1 - np.clip(h_diag[j], 1e-10, 1 - 1e-10))) + y_pred_j
-            X_loo[:, j] = y_loo_j
+            # 固定单变量模型系数为全模型的beta_ridge[j]
+            beta_j = beta_ridge[j]
+
+            # 单变量模型预测值
+            y_pred_j = beta_j * X[:, j]
+
+            # 计算留一预测值（广义线性模型留一公式）
+            # 注：分类场景后续补充完整实现，当前先保证线性回归正确
+            X_loo[:, j] = y_pred_j  # 临时实现，后续完善
 
     return X_loo, beta_ridge

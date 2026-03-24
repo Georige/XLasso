@@ -134,7 +134,7 @@ class BaseNLasso(BaseEstimator, ABC):
         pass
 
     @abstractmethod
-    def _reconstruct_coefficients(self, theta: np.ndarray, transform_info: dict) -> np.ndarray:
+    def _reconstruct_coefficients(self, theta_trans: np.ndarray, transform_info: dict, beta_ridge_trans: np.ndarray) -> np.ndarray:
         """
         系数还原：从变换空间映射回原始特征空间
         返回: coef: 原始特征系数 (p,)
@@ -173,23 +173,23 @@ class BaseNLasso(BaseEstimator, ABC):
             self.scaler_ = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
             X = self.scaler_.fit_transform(X)
 
-        # 2. 第一阶段：强Ridge + LOO矩阵 + 权重计算
-        beta_ridge, X_loo, weights = self._fit_first_stage(X, y)
+        # 2. 组处理模块：前置分组与正交分解（原始X→变换后X_trans）
+        X_trans, transform_info = self._fit_group_module(X)
         if self.verbose:
-            print(f"[Stage 1] Completed: Ridge max magnitude={np.max(np.abs(beta_ridge)):.4f}")
+            print(f"[Preprocess] Group module completed: {len(self.groups_)} groups detected, transformed features={X_trans.shape[1]}")
 
-        # 3. 组处理模块：分组与正交分解
-        X_loo_transformed, transform_info = self._fit_group_module(X, X_loo)
+        # 3. 第一阶段：强Ridge + LOO矩阵 + 权重计算（基于变换后的X_trans）
+        beta_ridge_trans, X_loo_trans, weights_trans = self._fit_first_stage(X_trans, y)
         if self.verbose:
-            print(f"[Stage 2] Completed: {transform_info.get('n_groups', 0)} groups detected")
+            print(f"[Stage 1] Completed: Ridge max magnitude={np.max(np.abs(beta_ridge_trans)):.4f}")
 
-        # 4. 第二阶段：非对称Lasso求解
-        theta = self._fit_second_stage(X_loo_transformed, y, weights)
+        # 4. 第二阶段：非对称Lasso求解（基于变换后的LOO矩阵）
+        theta_trans = self._fit_second_stage(X_loo_trans, y, weights_trans)
         if self.verbose:
-            print(f"[Stage 3] Completed: non-zero coefficients={np.sum(theta != 0):d}/{len(theta):d}")
+            print(f"[Stage 2] Completed: non-zero coefficients={np.sum(theta_trans != 0):d}/{len(theta_trans):d}")
 
-        # 5. 系数还原到原始特征空间
-        coef_standardized = self._reconstruct_coefficients(theta, transform_info)
+        # 5. 系数还原到原始特征空间（传入变换空间Ridge系数）
+        coef_standardized = self._reconstruct_coefficients(theta_trans, transform_info, beta_ridge_trans)
 
         # 6. 逆标准化得到原始尺度系数
         if self.standardize:

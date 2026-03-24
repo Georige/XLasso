@@ -9,11 +9,12 @@ import os
 import sys
 import argparse
 from pathlib import Path
+from typing import Dict, Any
 
 # 添加项目根目录
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tuning_util import (
+from tuning.tuning_util import (
     TuningResultSaver,
     generate_param_combinations,
     run_single_tuning_experiment,
@@ -22,6 +23,53 @@ from tuning_util import (
     STAGE2_LAMBDA_SPACE,
     EXPERIMENT_NAMES
 )
+
+
+def print_metrics_summary(summary_stats: Dict[str, Any], family: str, prefix: str = "   "):
+    """
+    打印全面的指标汇总信息
+
+    Args:
+        summary_stats: 汇总统计字典
+        family: 任务类型 ("gaussian" 或 "binomial")
+        prefix: 打印前缀
+    """
+    if family == "gaussian":
+        # 回归任务指标
+        mse = summary_stats.get('mse_mean', float('nan'))
+        mae = summary_stats.get('mae_mean', float('nan'))
+        r2 = summary_stats.get('r2_mean', float('nan'))
+        fdr = summary_stats.get('fdr_mean', float('nan'))
+        tpr = summary_stats.get('tpr_mean', float('nan'))
+        sparsity = summary_stats.get('sparsity_mean', float('nan'))
+        n_nonzero = summary_stats.get('n_nonzero_mean', float('nan'))
+        coef_sse = summary_stats.get('coef_sse_mean', float('nan'))
+        train_time = summary_stats.get('train_time_mean', float('nan'))
+
+        print(f"{prefix}📊 指标汇总:")
+        print(f"{prefix}   ├─ 预测精度: MSE={mse:.6f}, MAE={mae:.6f}, R²={r2:.6f}")
+        print(f"{prefix}   ├─ 变量选择: FDR={fdr:.6f}, TPR={tpr:.6f}")
+        print(f"{prefix}   ├─ 稀疏性: Sparsity={sparsity:.4f}, n_nonzero={n_nonzero:.1f}")
+        print(f"{prefix}   ├─ 系数估计: Coef_SSE={coef_sse:.6f}")
+        print(f"{prefix}   └─ 运行时间: Train={train_time:.4f}s")
+    else:
+        # 分类任务指标
+        accuracy = summary_stats.get('accuracy_mean', float('nan'))
+        f1 = summary_stats.get('f1_mean', float('nan'))
+        auc = summary_stats.get('auc_mean', float('nan'))
+        fdr = summary_stats.get('fdr_mean', float('nan'))
+        tpr = summary_stats.get('tpr_mean', float('nan'))
+        sparsity = summary_stats.get('sparsity_mean', float('nan'))
+        n_nonzero = summary_stats.get('n_nonzero_mean', float('nan'))
+        coef_sse = summary_stats.get('coef_sse_mean', float('nan'))
+        train_time = summary_stats.get('train_time_mean', float('nan'))
+
+        print(f"{prefix}📊 指标汇总:")
+        print(f"{prefix}   ├─ 分类性能: Acc={accuracy:.6f}, F1={f1:.6f}, AUC={auc:.6f}")
+        print(f"{prefix}   ├─ 变量选择: FDR={fdr:.6f}, TPR={tpr:.6f}")
+        print(f"{prefix}   ├─ 稀疏性: Sparsity={sparsity:.4f}, n_nonzero={n_nonzero:.1f}")
+        print(f"{prefix}   ├─ 系数估计: Coef_SSE={coef_sse:.6f}")
+        print(f"{prefix}   └─ 运行时间: Train={train_time:.4f}s")
 
 
 def parse_args():
@@ -97,10 +145,11 @@ def run_stage1(
     total_combinations = len(param_combinations)
     print(f"📊 共 {total_combinations} 个参数组合待测试\n")
 
-    best_r2 = -float('inf')
+    best_mse = float('inf')
     best_accuracy = -float('inf')
     best_params = None
     best_fdr = float('inf')
+    best_summary = None
 
     for i, params in enumerate(param_combinations):
         # 添加固定的lambda
@@ -128,32 +177,34 @@ def run_stage1(
         )
 
         # 更新最优参数
-        current_r2 = summary_stats.get('r2_mean', -float('inf'))
+        current_mse = summary_stats.get('mse_mean', float('inf'))
         current_accuracy = summary_stats.get('accuracy_mean', -float('inf'))
         current_fdr = summary_stats.get('fdr_mean', float('inf'))
 
         if family == "gaussian":
-            # 回归任务：优先看R²
-            if current_r2 > best_r2 or (current_r2 == best_r2 and current_fdr < best_fdr):
-                best_r2 = current_r2
+            # 回归任务：优先看MSE（越小越好）
+            if current_mse < best_mse or (current_mse == best_mse and current_fdr < best_fdr):
+                best_mse = current_mse
                 best_fdr = current_fdr
                 best_params = params.copy()
-                print(f"   🌟 发现新最优参数! R²={best_r2:.4f}, FDR={best_fdr:.4f}")
+                best_summary = summary_stats.copy()
+                print(f"   🌟 发现新最优参数!")
+                print_metrics_summary(summary_stats, family, prefix="   ")
         else:
             # 分类任务：优先看准确率
             if current_accuracy > best_accuracy or (current_accuracy == best_accuracy and current_fdr < best_fdr):
                 best_accuracy = current_accuracy
                 best_fdr = current_fdr
                 best_params = params.copy()
-                print(f"   🌟 发现新最优参数! 准确率={best_accuracy:.4f}, FDR={best_fdr:.4f}")
+                best_summary = summary_stats.copy()
+                print(f"   🌟 发现新最优参数!")
+                print_metrics_summary(summary_stats, family, prefix="   ")
 
     print(f"\n✅ Stage1完成!")
     if best_params:
         print(f"🏆 最优结构化参数: {best_params}")
-        if family == "gaussian":
-            print(f"   最优R²: {best_r2:.4f}, 最优FDR: {best_fdr:.4f}")
-        else:
-            print(f"   最优准确率: {best_accuracy:.4f}, 最优FDR: {best_fdr:.4f}")
+        if best_summary:
+            print_metrics_summary(best_summary, family, prefix="   ")
 
     return best_params
 
@@ -182,11 +233,12 @@ def run_stage2(
     print(f"📊 基于Stage1最优结构化参数: {base_params}")
     print(f"📊 Lambda搜索空间: {STAGE2_LAMBDA_SPACE[0]:.6f} 到 {STAGE2_LAMBDA_SPACE[-1]:.6f} (共{len(STAGE2_LAMBDA_SPACE)}个点)\n")
 
-    best_r2 = -float('inf')
+    best_mse = float('inf')
     best_accuracy = -float('inf')
     best_params = None
     best_fdr = float('inf')
     best_lambda = None
+    best_summary = None
 
     for i, lambda_val in enumerate(STAGE2_LAMBDA_SPACE):
         # 合并参数
@@ -215,18 +267,20 @@ def run_stage2(
         )
 
         # 更新最优参数
-        current_r2 = summary_stats.get('r2_mean', -float('inf'))
+        current_mse = summary_stats.get('mse_mean', float('inf'))
         current_accuracy = summary_stats.get('accuracy_mean', -float('inf'))
         current_fdr = summary_stats.get('fdr_mean', float('inf'))
 
         if family == "gaussian":
-            # 回归任务：优先看R²
-            if current_r2 > best_r2 or (current_r2 == best_r2 and current_fdr < best_fdr):
-                best_r2 = current_r2
+            # 回归任务：优先看MSE（越小越好）
+            if current_mse < best_mse or (current_mse == best_mse and current_fdr < best_fdr):
+                best_mse = current_mse
                 best_fdr = current_fdr
                 best_lambda = lambda_val
                 best_params = params.copy()
-                print(f"   🌟 发现新最优lambda! lambda={best_lambda:.6f}, R²={best_r2:.4f}, FDR={best_fdr:.4f}")
+                best_summary = summary_stats.copy()
+                print(f"   🌟 发现新最优lambda! lambda={best_lambda:.6f}")
+                print_metrics_summary(summary_stats, family, prefix="   ")
         else:
             # 分类任务：优先看准确率
             if current_accuracy > best_accuracy or (current_accuracy == best_accuracy and current_fdr < best_fdr):
@@ -234,15 +288,15 @@ def run_stage2(
                 best_fdr = current_fdr
                 best_lambda = lambda_val
                 best_params = params.copy()
-                print(f"   🌟 发现新最优lambda! lambda={best_lambda:.6f}, 准确率={best_accuracy:.4f}, FDR={best_fdr:.4f}")
+                best_summary = summary_stats.copy()
+                print(f"   🌟 发现新最优lambda! lambda={best_lambda:.6f}")
+                print_metrics_summary(summary_stats, family, prefix="   ")
 
     print(f"\n✅ Stage2完成!")
     if best_params:
         print(f"🏆 最优完整参数: {best_params}")
-        if family == "gaussian":
-            print(f"   最优R²: {best_r2:.4f}, 最优FDR: {best_fdr:.4f}")
-        else:
-            print(f"   最优准确率: {best_accuracy:.4f}, 最优FDR: {best_fdr:.4f}")
+        if best_summary:
+            print_metrics_summary(best_summary, family, prefix="   ")
 
     return best_params
 

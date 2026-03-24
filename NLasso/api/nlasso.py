@@ -24,6 +24,9 @@ class NLasso(BaseNLassoRegressor):
         """
         第一阶段实现：强Ridge回归 + LOO矩阵构造 + 权重计算
         """
+        # 保存y的均值，用于预测阶段构造LOO矩阵
+        self.y_mean_ = np.mean(y)
+
         # 构造LOO引导矩阵，得到全样本Ridge系数
         X_loo, beta_ridge = construct_X_loo(
             X=X,
@@ -42,15 +45,17 @@ class NLasso(BaseNLassoRegressor):
             s=self.s
         )
 
-        self.beta_ridge_ = beta_ridge
+        self.beta_ridge_ = beta_ridge  # 原始Ridge系数（兼容旧接口）
+        self.beta_ridge_trans_ = beta_ridge  # 变换空间的Ridge系数，用于预测
         self.X_loo_ = X_loo
         self.weights_ = weights
 
         return beta_ridge, X_loo, weights
 
-    def _fit_group_module(self, X: np.ndarray, X_loo: np.ndarray) -> tuple:
+    def _fit_group_module(self, X: np.ndarray) -> tuple:
         """
-        组处理模块实现：分组 + 正交分解 + 变换LOO矩阵
+        组处理模块实现：分组 + 正交分解 + 变换原始特征矩阵
+        前置预处理步骤，在第一阶段之前执行
         """
         n, p = X.shape
 
@@ -63,29 +68,29 @@ class NLasso(BaseNLassoRegressor):
             verbose=self.verbose
         )
 
-        # 2. 对每个组拟合正交分解器，变换LOO矩阵
+        # 2. 对每个组拟合正交分解器，变换原始特征矩阵
         self.decomposers_ = []
-        X_loo_transformed_parts = []
+        X_transformed_parts = []
 
         for group in self.groups_:
-            X_group_loo = X_loo[:, group]
+            X_group = X[:, group]
             k = len(group)
 
             if k == 1:
                 # 单变量组无需分解，直接保留
                 decomposer = OrthogonalDecomposer()
-                decomposer.fit(X_group_loo)
-                X_transformed = decomposer.transform(X_group_loo)
+                decomposer.fit(X_group)
+                X_transformed = decomposer.transform(X_group)
             else:
                 # 高相关组进行正交分解
                 decomposer = OrthogonalDecomposer(random_state=self.random_state)
-                X_transformed = decomposer.fit_transform(X_group_loo)
+                X_transformed = decomposer.fit_transform(X_group)
 
             self.decomposers_.append(decomposer)
-            X_loo_transformed_parts.append(X_transformed)
+            X_transformed_parts.append(X_transformed)
 
-        # 3. 拼接所有变换后的分量，得到最终的X_loo_transformed
-        X_loo_transformed = np.column_stack(X_loo_transformed_parts)
+        # 3. 拼接所有变换后的分量，得到最终的X_trans
+        X_trans = np.column_stack(X_transformed_parts)
 
         # 保存变换信息用于系数还原
         self.transform_info_ = {
@@ -94,39 +99,14 @@ class NLasso(BaseNLassoRegressor):
             'p_original': p
         }
 
-        return X_loo_transformed, self.transform_info_
+        return X_trans, self.transform_info_
 
-    def _fit_second_stage(self, X_loo_transformed: np.ndarray, y: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    def _fit_second_stage(self, X_loo_trans: np.ndarray, y: np.ndarray, weights_trans: np.ndarray) -> np.ndarray:
         """
         第二阶段实现：非对称Lasso坐标下降求解
-        实现组变换后的权重映射逻辑（paper 3.4.4节）
+        输入的weights已经是变换空间的权重，无需额外映射
         """
-        # 1. 权重映射：将原始特征权重映射到变换后的特征空间
-        transformed_weights = []
-        for group, decomposer in zip(self.groups_, self.decomposers_):
-            k = len(group)
-            if k == 1:
-                # 单变量组：直接复用原始权重
-                w = weights[group[0]]
-                transformed_weights.append(w.reshape(1, 2))
-            else:
-                # 多变量组：
-                m = decomposer.m_  # 共同趋势分量数
-                group_weights = weights[group]  # 组内原始特征权重 (k, 2)
-
-                # a. 共同趋势分量权重：取组内最小权重（惩罚最轻，优先保留共同信号）
-                trend_weight = np.min(group_weights, axis=0)
-                trend_weights = np.tile(trend_weight, (m, 1))  # (m, 2)
-
-                # b. 细节分量权重：与原始特征权重保持一致
-                detail_weights = group_weights  # (k, 2)
-
-                # 合并组内权重
-                group_transformed_weights = np.vstack([trend_weights, detail_weights])
-                transformed_weights.append(group_transformed_weights)
-
-        # 拼接所有组的权重，得到变换后特征的权重矩阵 (p_transformed, 2)
-        weights_transformed = np.vstack(transformed_weights)
+        weights_transformed = weights_trans
         self.weights_transformed_ = weights_transformed
 
         # Lambda参数处理
@@ -139,7 +119,7 @@ class NLasso(BaseNLassoRegressor):
                 lambdas = self.lambda_path
             else:
                 # 计算lambda_max：所有特征的最大相关性
-                XtY = np.abs(X_loo_transformed.T @ y) / len(y)
+                XtY = np.abs(X_loo_trans.T @ y) / len(y)
                 lambda_max = np.max(XtY) / np.min(weights_transformed)
                 lambda_min = lambda_max * 1e-4
                 lambdas = np.logspace(np.log10(lambda_min), np.log10(lambda_max), self.n_lambda)[::-1]
@@ -155,7 +135,7 @@ class NLasso(BaseNLassoRegressor):
                 print(f"[Stage 3] Solving lambda {i+1}/{len(lambdas)}: {lam:.6f}")
 
             theta, obj, n_iter = cd_solve(
-                X=X_loo_transformed,
+                X=X_loo_trans,
                 y=y,
                 weights=weights_transformed,
                 lambda_=lam,
@@ -170,7 +150,7 @@ class NLasso(BaseNLassoRegressor):
                     theta = best_theta.copy()
                     obj = best_obj
                 else:
-                    theta = np.zeros(X_loo_transformed.shape[1], dtype=np.float64)
+                    theta = np.zeros(X_loo_trans.shape[1], dtype=np.float64)
                     obj = np.sum(y ** 2) / (2 * len(y))  # 零系数的目标值
 
             # 更新最优解
@@ -182,7 +162,7 @@ class NLasso(BaseNLassoRegressor):
 
         # 双重保险：确保返回有效的theta
         if best_theta is None:
-            best_theta = np.zeros(X_loo_transformed.shape[1], dtype=np.float64)
+            best_theta = np.zeros(X_loo_trans.shape[1], dtype=np.float64)
             best_lambda = lambdas[0] if len(lambdas) > 0 else 0.1
             best_obj = np.sum(y ** 2) / (2 * len(y))
             best_n_iter = 0
@@ -196,13 +176,23 @@ class NLasso(BaseNLassoRegressor):
         self.theta_ = theta
         return theta
 
-    def _reconstruct_coefficients(self, theta: np.ndarray, transform_info: dict) -> np.ndarray:
+    def _reconstruct_coefficients(self, theta_trans: np.ndarray, transform_info: dict, beta_ridge_trans: np.ndarray) -> np.ndarray:
         """
         系数还原实现：从变换空间映射回原始特征空间
-        根据论文：最终系数 = beta_ridge * theta（element-wise乘积）
+        正确流程：theta_trans * beta_ridge_trans → 逆变换 → 原始系数
         """
-        beta_transformed = reconstruct_coefficients(
-            theta_transformed=theta,
+        # 第一步：组合系数映射，逐元素相乘，得到变换空间的实际系数
+        beta_trans = theta_trans * beta_ridge_trans
+
+        # 临时调试打印
+        if self.verbose:
+            print(f"[Debug] theta_trans范围: {np.min(theta_trans):.6f} ~ {np.max(theta_trans):.6f}, 非零数: {np.sum(theta_trans != 0)}")
+            print(f"[Debug] beta_ridge_trans范围: {np.min(beta_ridge_trans):.6f} ~ {np.max(beta_ridge_trans):.6f}")
+            print(f"[Debug] beta_trans范围: {np.min(beta_trans):.6f} ~ {np.max(beta_trans):.6f}, 非零数: {np.sum(beta_trans != 0)}")
+
+        # 第二步：正交逆变换，还原到原始特征空间
+        beta_original = reconstruct_coefficients(
+            theta_transformed=beta_trans,
             groups=transform_info['groups'],
             decomposers=transform_info['decomposers'],
             p_original=transform_info['p_original'],
@@ -210,10 +200,54 @@ class NLasso(BaseNLassoRegressor):
             epsilon=1e-6
         )
 
-        # 按照UniLasso/NLasso论文：最终系数是 beta_ridge * theta（逐元素相乘）
-        beta_original = self.beta_ridge_ * beta_transformed
+        if self.verbose:
+            print(f"[Debug] 逆变换后beta_original范围: {np.min(beta_original):.6f} ~ {np.max(beta_original):.6f}, 非零数: {np.sum(np.abs(beta_original) > 1e-6)}")
 
         return beta_original
+
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """
+        NLasso正确预测实现：复现训练时的两阶段流程
+        Args:
+            X: 原始特征矩阵 (n_samples, n_features)
+        Returns:
+            y_pred: 预测值 (n_samples,)
+        """
+        from sklearn.utils.validation import check_is_fitted, check_array
+        from ..base import _DTYPE, _COPY_WHEN_POSSIBLE
+        check_is_fitted(self, 'is_fitted_')
+        X = check_array(
+            X,
+            accept_sparse=['csr', 'csc'],
+            dtype=_DTYPE,
+            copy=_COPY_WHEN_POSSIBLE,
+            ensure_2d=True
+        )
+
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(f"X has {X.shape[1]} features, expected {self.n_features_in_}")
+
+        # 1. 标准化（和训练时一致）
+        if self.standardize:
+            X = self.scaler_.transform(X)
+
+        # 2. 组正交变换：和训练时完全相同的变换
+        X_trans_parts = []
+        for group, decomposer in zip(self.groups_, self.decomposers_):
+            X_group = X[:, group]
+            X_transformed = decomposer.transform(X_group)
+            X_trans_parts.append(X_transformed)
+        X_trans = np.column_stack(X_trans_parts)
+
+        # 3. 构造预测用LOO矩阵：X_loo_predict[i,j] = X_trans[i,j] * beta_ridge_trans_[j] + y_mean_
+        # 和训练时X_loo的构造完全一致，每个单变量预测值都包含全局y均值
+        X_loo_predict = X_trans * self.beta_ridge_trans_ + self.y_mean_
+
+        # 4. 预测：X_loo_predict @ theta_，不需要额外截距，因为已经包含在每个单变量预测值中
+        y_pred = X_loo_predict @ self.theta_
+
+        return y_pred
 
 
 class NLassoClassifier(NLasso):
