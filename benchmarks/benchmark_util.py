@@ -509,9 +509,59 @@ class BenchmarkRunner:
 def get_algorithm_list(task_type='regression'):
     """获取默认算法列表（全部使用CV自动调参版本）"""
     from sklearn.linear_model import LassoCV, LogisticRegressionCV
-    from other_lasso import (
-        AdaptiveLassoCV, FusedLassoCV, GroupLassoCV, AdaptiveSparseGroupLassoCV
-    )
+
+    # 导入UniLasso
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from unilasso import cv_unilasso, predict as unilasso_predict
+    from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
+
+    class UniLassoCV(BaseEstimator, RegressorMixin):
+        """UniLasso CV wrapper for regression"""
+        def __init__(self, lambda_ridge=None, gamma=None, s=1.0, n_alphas=50, cv=3,
+                     max_iter=1000, tol=1e-4, random_state=2026, family='gaussian'):
+            self.lambda_ridge = lambda_ridge
+            self.gamma = gamma
+            self.s = s
+            self.n_alphas = n_alphas
+            self.cv = cv
+            self.max_iter = max_iter
+            self.tol = tol
+            self.random_state = random_state
+            self.family = family
+            self.result_ = None
+            self.coef_ = None
+            self.intercept_ = None
+
+        def fit(self, X, y):
+            # 转换为numpy数组
+            X = np.asarray(X)
+            y = np.asarray(y)
+
+            # 调用cv_unilasso
+            self.result_ = cv_unilasso(
+                X, y,
+                lambda_ridge=self.lambda_ridge,
+                gamma=self.gamma,
+                s=self.s,
+                n_alphas=self.n_alphas,
+                cv=self.cv,
+                max_iter=self.max_iter,
+                tol=self.tol,
+                random_state=self.random_state,
+                family=self.family,
+                verbose=False
+            )
+
+            # 提取最优参数的系数
+            self.coef_ = self.result_.beta_opt
+            self.intercept_ = self.result_.intercept_opt
+            return self
+
+        def predict(self, X):
+            X = np.asarray(X)
+            return unilasso_predict(self.result_, X)
 
     algorithms = {}
 
@@ -521,6 +571,19 @@ def get_algorithm_list(task_type='regression'):
             'alphas': np.logspace(-4, 1, 50), 'cv': 3,
             'max_iter': 1000, 'tol': 1e-4, 'n_jobs': -1,
             'random_state': 2026
+        }, False)
+
+        # UniLasso
+        algorithms['UniLassoCV'] = (UniLassoCV, {
+            'lambda_ridge': 50.0,
+            'gamma': 1.0,
+            's': 1.0,
+            'n_alphas': 50,
+            'cv': 3,
+            'max_iter': 1000,
+            'tol': 1e-4,
+            'random_state': 2026,
+            'family': 'gaussian'
         }, False)
 
         # 本地CV实现（自动调参）- 暂时注释，后续优化后再开启
@@ -572,6 +635,74 @@ def get_algorithm_list(task_type='regression'):
             'Cs': np.logspace(-4, 1, 20), 'penalty': 'l1',
             'solver': 'liblinear', 'cv': 3, 'max_iter': 1000,
             'n_jobs': -1, 'random_state': 2026
+        }, True)
+
+        # UniLasso for classification
+        class UniLassoCVC(BaseEstimator, ClassifierMixin):
+            """UniLasso CV wrapper for classification"""
+            def __init__(self, lambda_ridge=None, gamma=None, s=1.0, n_alphas=50, cv=3,
+                         max_iter=1000, tol=1e-4, random_state=2026, family='binomial'):
+                self.lambda_ridge = lambda_ridge
+                self.gamma = gamma
+                self.s = s
+                self.n_alphas = n_alphas
+                self.cv = cv
+                self.max_iter = max_iter
+                self.tol = tol
+                self.random_state = random_state
+                self.family = family
+                self.result_ = None
+                self.coef_ = None
+                self.intercept_ = None
+                self.classes_ = np.array([0, 1])
+
+            def fit(self, X, y):
+                # 转换为numpy数组
+                X = np.asarray(X)
+                y = np.asarray(y)
+
+                # 调用cv_unilasso
+                self.result_ = cv_unilasso(
+                    X, y,
+                    lambda_ridge=self.lambda_ridge,
+                    gamma=self.gamma,
+                    s=self.s,
+                    n_alphas=self.n_alphas,
+                    cv=self.cv,
+                    max_iter=self.max_iter,
+                    tol=self.tol,
+                    random_state=self.random_state,
+                    family=self.family,
+                    verbose=False
+                )
+
+                # 提取最优参数的系数
+                self.coef_ = self.result_.beta_opt
+                self.intercept_ = self.result_.intercept_opt
+                return self
+
+            def predict(self, X):
+                X = np.asarray(X)
+                logits = unilasso_predict(self.result_, X)
+                return (logits > 0).astype(int)
+
+            def predict_proba(self, X):
+                X = np.asarray(X)
+                logits = unilasso_predict(self.result_, X)
+                # Sigmoid转换为概率
+                prob = 1 / (1 + np.exp(-logits))
+                return np.column_stack([1 - prob, prob])
+
+        algorithms['UniLassoCVC'] = (UniLassoCVC, {
+            'lambda_ridge': 50.0,
+            'gamma': 1.0,
+            's': 1.0,
+            'n_alphas': 50,
+            'cv': 3,
+            'max_iter': 1000,
+            'tol': 1e-4,
+            'random_state': 2026,
+            'family': 'binomial'
         }, True)
 
         # 本地CV实现（自动调参）- 暂时注释，后续优化后再开启

@@ -31,7 +31,8 @@ def run_experiment(exp_id, family):
         "--family", family,
         "--n-repeats", "3",
         "--cv", "5",
-        "--seed-start", "2026"
+        "--seed-start", "2026",
+        "--algorithms", "Sklearn_LassoCV", "UniLassoCV"
     ]
     log_file = Path(__file__).parent / f"exp{exp_id}_{family}.log"
     print(f"🚀 启动实验 {exp_id} [{family}]，日志文件: {log_file.name}")
