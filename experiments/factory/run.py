@@ -34,6 +34,9 @@ from experiments.modules import (
     NLassoClassifier,
     NLassoCV,
     NLassoClassifierCV,
+    AdaptiveFlippedLasso,
+    AdaptiveFlippedLassoClassifier,
+    AdaptiveFlippedLassoCV,
     AdaptiveLasso,
     AdaptiveLassoCV,
     FusedLasso,
@@ -55,6 +58,10 @@ ALGO_REGISTRY = {
     "nlclassifier": NLassoClassifier,
     "nlasso_cv": NLassoCV,
     "nlclassifier_cv": NLassoClassifierCV,
+    # AdaptiveFlippedLasso family
+    "adaptive_flipped_lasso": AdaptiveFlippedLasso,
+    "aflclassifier": AdaptiveFlippedLassoClassifier,
+    "aflclassifier_cv": AdaptiveFlippedLassoCV,
     # Other Lasso variants
     "adaptive_lasso": AdaptiveLasso,
     "adaptive_lasso_cv": AdaptiveLassoCV,
@@ -110,7 +117,7 @@ def load_config(config_path):
     config.setdefault("rho", 0.5)
     config.setdefault("n_repeats", 3)
     config.setdefault("cv_folds", 5)
-    config.setdefault("output_dir", "results/pilot/run")
+    config.setdefault("output_dir", "/home/lili/lyn/clear/NLasso/XLasso/experiments/results/pilot")
     config.setdefault("search_space", {})
     config.setdefault("lambda_1", 0.01)
     config.setdefault("lambda_2", 0.01)
@@ -218,6 +225,30 @@ def get_algo_params(algo_name, config):
             "gamma": config.get("gamma", 0.3),
             "s": config.get("s", 1.0),
             "group_threshold": config.get("group_threshold", 0.7),
+        })
+    elif algo_name in ["adaptive_flipped_lasso", "aflclassifier"]:
+        # AdaptiveFlippedLasso parameters
+        params.update({
+            "lambda_ridge": config.get("lambda_ridge", 10.0),
+            "lambda_": config.get("lambda_", 0.01),
+            "gamma": config.get("gamma", 1.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "aflclassifier_cv":
+        # AdaptiveFlippedLassoCV parameters
+        params.update({
+            "lambda_ridge": config.get("lambda_ridge", 10.0),
+            "lambda_min_ratio": config.get("lambda_min_ratio", 1e-4),
+            "n_lambda": config.get("n_lambda", 50),
+            "cv": config.get("cv_folds", 5),
+            "gamma": config.get("gamma", 1.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
         })
     elif algo_name.startswith("adaptive_lasso"):
         # AdaptiveLasso parameters (sklearn-compatible)

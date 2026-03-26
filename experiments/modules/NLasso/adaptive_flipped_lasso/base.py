@@ -110,11 +110,11 @@ class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
         signs = np.sign(beta_ridge)
         signs[signs == 0] = 1.0  # 处理零值
 
-        # 计算归一化权重
+        # 计算归一化权重（不裁剪，允许噪声特征的大权重无界增长）
         eps = 1e-5
         raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** self.gamma
         weights = raw_weights / np.mean(raw_weights)
-        weights = np.clip(weights, 0.0, 1.0)
+        # 注意：不再裁剪到 [0,1]，因为噪声权重大于1是算法的关键
 
         # 翻转特征方向
         X_flipped = X * signs
@@ -229,7 +229,11 @@ class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """预测"""
+        """预测
+
+        注意：coef_ 在 fit() 时已经通过除以 scaler_.scale_ 转换到原始空间，
+        因此预测时必须使用原始 X（未标准化）。
+        """
         check_is_fitted(self, 'is_fitted_')
         X = check_array(
             X,
@@ -242,9 +246,7 @@ class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
         if X.shape[1] != self.n_features_in_:
             raise ValueError(f"X has {X.shape[1]} features, expected {self.n_features_in_}")
 
-        if self.standardize:
-            X = self.scaler_.transform(X)
-
+        # 不再标准化 X，因为 coef_ 已经在原始空间
         return X @ self.coef_ + self.intercept_
 
     def score(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None) -> float:

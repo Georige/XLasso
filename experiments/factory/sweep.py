@@ -79,7 +79,7 @@ def grid_search(config):
     print(f"[sweep:stage1] Parameters: {param_names}")
 
     # Generate experiment directory
-    config["output_dir"] = config.get("output_dir", "results/stage1")
+    config["output_dir"] = config.get("output_dir", "/home/lili/lyn/clear/NLasso/XLasso/experiments/results/stage1")
     exp_dir = generate_experiment_dir(config)
     save_config(config, exp_dir)
 
@@ -100,14 +100,27 @@ def grid_search(config):
             result = run_trial(trial_config, exp_dir)
 
             if result and result.get("n_folds_completed", 0) > 0:
-                # Flatten params into individual columns
-                result_entry = {"idx": idx}
-                for k, v in param_dict.items():
-                    result_entry[f"params_{k}"] = v
-                result_entry.update(result["metrics"])
-                all_results.append(result_entry)
+                # Check if we have individual repeat results
+                individual = result.get("individual_metrics", [])
+                n_repeats_completed = result.get("n_repeats_completed", 1)
 
-                # Track best
+                if len(individual) > 1:
+                    # Multiple repeats: save each repeat as separate row for stability analysis
+                    for repeat_idx, repeat_metrics in enumerate(individual):
+                        result_entry = {"idx": idx, "repeat": repeat_idx}
+                        for k, v in param_dict.items():
+                            result_entry[f"params_{k}"] = v
+                        result_entry.update(repeat_metrics)
+                        all_results.append(result_entry)
+                else:
+                    # Single repeat: use standard path
+                    result_entry = {"idx": idx}
+                    for k, v in param_dict.items():
+                        result_entry[f"params_{k}"] = v
+                    result_entry.update(result["metrics"])
+                    all_results.append(result_entry)
+
+                # Track best (use mean metrics)
                 current_f1 = result["metrics"].get("f1", 0)
                 if best_metrics is None or current_f1 > best_metrics.get("f1", 0):
                     best_metrics = result["metrics"]
@@ -268,21 +281,35 @@ def run_trial(config, parent_dir):
         if algo_class is None:
             raise ValueError(f"Unknown algorithm: {algo_name}")
 
-        # CV
-        cv = CrossValidator(n_folds=n_folds, shuffle=True, random_state=42 + repeat)
-
-        repeat_metrics = []
-
-        for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X)):
-            fold_metrics, coefs = run_single_fold(
-                algo_class, config, X, y, beta_true, fold_idx, train_idx, test_idx
+        # Single split (no CV): use train_test_split equivalent
+        if n_folds == 1:
+            from sklearn.model_selection import train_test_split
+            train_idx, test_idx = train_test_split(
+                np.arange(len(y)),
+                test_size=0.2,
+                random_state=random_state,
+                shuffle=True
             )
-            repeat_metrics.append(fold_metrics)
+            fold_metrics, coefs = run_single_fold(
+                algo_class, config, X, y, beta_true, repeat, train_idx, test_idx
+            )
+            metrics_list.append(fold_metrics)
+        else:
+            # CV
+            cv = CrossValidator(n_folds=n_folds, shuffle=True, random_state=42 + repeat)
 
-        # Average across folds
-        metrics_df = pd.DataFrame(repeat_metrics)
-        avg_metrics = metrics_df.mean().to_dict()
-        metrics_list.append(avg_metrics)
+            repeat_metrics = []
+
+            for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X)):
+                fold_metrics, coefs = run_single_fold(
+                    algo_class, config, X, y, beta_true, fold_idx, train_idx, test_idx
+                )
+                repeat_metrics.append(fold_metrics)
+
+            # Average across folds
+            metrics_df = pd.DataFrame(repeat_metrics)
+            avg_metrics = metrics_df.mean().to_dict()
+            metrics_list.append(avg_metrics)
 
     # Average across repeats
     final_metrics = pd.DataFrame(metrics_list).mean().to_dict()
@@ -290,6 +317,8 @@ def run_trial(config, parent_dir):
     return {
         "n_folds_completed": n_folds,
         "metrics": final_metrics,
+        "individual_metrics": metrics_list,
+        "n_repeats_completed": n_repeats,
     }
 
 
@@ -327,7 +356,7 @@ def cv_fine_tuning(config):
     print(f"[sweep:stage2] Fine search space: {fine_space}")
 
     # Generate experiment directory
-    config["output_dir"] = config.get("output_dir", "results/stage2")
+    config["output_dir"] = config.get("output_dir", "/home/lili/lyn/clear/NLasso/XLasso/experiments/results/stage2")
     exp_dir = generate_experiment_dir(config)
     save_config(config, exp_dir)
 
@@ -353,12 +382,23 @@ def cv_fine_tuning(config):
             result = run_trial(trial_config, exp_dir)
 
             if result and result.get("n_folds_completed", 0) > 0:
-                metrics = result["metrics"]
-                all_results.append({
-                    "idx": idx,
-                    "params": param_dict,
-                    **metrics,
-                })
+                # Check if we have individual repeat results
+                individual = result.get("individual_metrics", [])
+
+                if len(individual) > 1:
+                    # Multiple repeats: save each repeat as separate row
+                    for repeat_idx, repeat_metrics in enumerate(individual):
+                        result_entry = {"idx": idx, "repeat": repeat_idx, "params": param_dict}
+                        result_entry.update(repeat_metrics)
+                        all_results.append(result_entry)
+                else:
+                    # Single repeat: use standard path
+                    metrics = result["metrics"]
+                    all_results.append({
+                        "idx": idx,
+                        "params": param_dict,
+                        **metrics,
+                    })
 
                 # Track best
                 current_f1 = metrics.get("f1", 0)

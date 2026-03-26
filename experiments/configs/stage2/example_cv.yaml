@@ -40,7 +40,7 @@ fine_search_space:
   group_threshold: [0.6, 0.65, 0.7, 0.75, 0.8]
 
 # Output settings
-output_dir: results/stage2
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/stage2
 
 # Algorithm parameters
 algo_params:

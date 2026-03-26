@@ -1,0 +1,39 @@
+# Stability Test for AdaptiveFlippedLasso - Exp1 Settings
+# ==========================================================
+# Usage:
+#   python factory/sweep.py stage1 --config configs/stability/adaptive_flipped_lasso_exp1_stability.yaml
+
+experiment: adaptive_flipped_lasso_exp1_stability
+description: "Stability test: 50 repeats with best config from stage1"
+algo: adaptive_flipped_lasso
+
+# Data generation parameters (Exp1 settings)
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+sigma: 1.0
+correlation_type: pairwise
+rho: 0.5
+random_state: 42
+
+# Cross-validation settings (no CV, single split per repeat)
+n_repeats: 50
+cv_folds: 1
+
+# Primary metric
+primary_metric: f1
+
+# Best config from Stage1 - as single-point search space
+search_space:
+  lambda_ridge: [10.0]
+  lambda_: [1.0]
+  gamma: [0.5]
+
+# Algorithm params
+alpha_min_ratio: 0.0001
+n_alpha: 50
+max_iter: 2000
+tol: 0.0001
+
+# Output settings
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/stability

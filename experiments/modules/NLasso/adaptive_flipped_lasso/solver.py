@@ -11,7 +11,10 @@ def compute_adaptive_weights(beta_ridge: np.ndarray, gamma: float = 1.0, eps: fl
     计算归一化自适应权重
 
     步骤1: w_raw = 1 / (|β_ridge| + ε)^γ
-    步骤2: w_norm = w_raw / mean(w_raw)，限制在 [0, 1]
+    步骤2: w_norm = w_raw / mean(w_raw)，不限制上限
+
+    注意：不再裁剪到 [0,1]，因为噪声特征的大权重（>1）是算法的关键，
+    配合非负 Lasso 可以有效抑制噪声。
 
     Args:
         beta_ridge: Ridge 回归系数 (p,)
@@ -22,7 +25,8 @@ def compute_adaptive_weights(beta_ridge: np.ndarray, gamma: float = 1.0, eps: fl
     """
     raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** gamma
     weights = raw_weights / np.mean(raw_weights)
-    return np.clip(weights, 0.0, 1.0)
+    # 注意：不裁剪到 [0,1]，噪声权重大于1是算法的关键
+    return weights
 
 
 def flip_features(X: np.ndarray, signs: np.ndarray) -> np.ndarray:

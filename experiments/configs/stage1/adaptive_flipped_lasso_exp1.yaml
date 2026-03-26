@@ -1,0 +1,36 @@
+# Stage1 Config - AdaptiveFlippedLasso Experiment 1
+# Exp1: pairwise correlation 0.5, n=300, p=500, first 20 variables β=1.0
+experiment: adaptive_flipped_lasso_exp1
+description: "AdaptiveFlippedLasso on Exp1 settings"
+algo: adaptive_flipped_lasso
+
+# Data generation parameters (Exp1 settings)
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+sigma: 1.0
+correlation_type: pairwise
+rho: 0.5
+random_state: 42
+
+# Cross-validation settings (Stage1: no CV, single split per repeat)
+n_repeats: 5
+cv_folds: 1
+
+# Primary metric
+primary_metric: f1
+
+# AdaptiveFlippedLasso parameters
+alpha_min_ratio: 0.0001
+n_alpha: 50
+max_iter: 2000
+tol: 0.0001
+
+# Grid search space (Stage1: no CV, single split per repeat)
+search_space:
+  lambda_ridge: [1.0, 10.0, 50.0]
+  lambda_: [0.01, 0.1, 0.5, 1.0]
+  gamma: [0.5, 1.0, 2.0]
+
+# Output settings
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/stage1

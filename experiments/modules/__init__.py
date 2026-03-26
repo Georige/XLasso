@@ -38,7 +38,11 @@ from typing import Dict, Tuple, Optional
 # =============================================================================
 # NLasso Family (from NLasso/)
 # =============================================================================
-from .NLasso import NLasso, NLassoClassifier, NLassoCV, NLassoClassifierCV
+from .NLasso import (
+    NLasso, NLassoClassifier, NLassoCV, NLassoClassifierCV,
+    AdaptiveFlippedLasso, AdaptiveFlippedLassoClassifier,
+    AdaptiveFlippedLassoCV,
+)
 from .NLasso import metrics as nlasso_metrics
 
 # =============================================================================
@@ -265,6 +269,11 @@ ALGO_REGISTRY = {
     # NLasso family
     "nlasso": NLasso,
     "nlclassifier": NLassoClassifier,
+    "nlasso_cv": NLassoCV,
+    # AdaptiveFlippedLasso family
+    "adaptive_flipped_lasso": AdaptiveFlippedLasso,
+    "aflclassifier": AdaptiveFlippedLassoClassifier,
+    "aflclassifier_cv": AdaptiveFlippedLassoCV,
     # XLasso (fit_uni/cv_uni)
     "xlasso": XLasso,
     "xlasso_cv": XLassoCV,
@@ -290,6 +299,10 @@ __all__ = [
     "NLassoClassifier",
     "NLassoCV",
     "NLassoClassifierCV",
+    # AdaptiveFlippedLasso family
+    "AdaptiveFlippedLasso",
+    "AdaptiveFlippedLassoClassifier",
+    "AdaptiveFlippedLassoCV",
     "nlasso_metrics",
     # Other Lasso variants
     "AdaptiveLasso",

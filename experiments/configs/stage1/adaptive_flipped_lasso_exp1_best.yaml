@@ -1,0 +1,65 @@
+experiment: adaptive_flipped_lasso_exp1
+generated_by: sweep.py stage1
+generated_at: '2026-03-26T16:23:56.777314'
+base_config: configs/stage1/adaptive_flipped_lasso_exp1.yaml
+search_space:
+  lambda_ridge:
+  - 1.0
+  - 10.0
+  - 50.0
+  lambda_:
+  - 0.01
+  - 0.1
+  - 0.5
+  - 1.0
+  gamma:
+  - 0.5
+  - 1.0
+  - 2.0
+best_structural_region:
+  lambda_ridge:
+  - 1.0
+  - 50.0
+  lambda_:
+  - 0.5
+  - 1.0
+  gamma:
+  - 0.5
+  - 1.0
+structural_insight:
+- lambda_ is positively correlated with F1 (r=0.590)
+- gamma is negatively correlated with F1 (r=-0.633)
+- 'Best lambda_ridge range: [1.000000, 50.000000]'
+- 'Best lambda_ range: [0.500000, 1.000000]'
+- 'Best gamma range: [0.500000, 1.000000]'
+best_grid_point:
+  lambda_ridge: !!python/object/apply:numpy.core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    AAAAAAAA8D8=
+  lambda_: !!python/object/apply:numpy.core.multiarray.scalar
+  - *id001
+  - !!binary |
+    AAAAAAAA8D8=
+  gamma: !!python/object/apply:numpy.core.multiarray.scalar
+  - *id001
+  - !!binary |
+    AAAAAAAA4D8=
+best_metrics:
+  f1: 1.0
+  mse: 2.091157484626929
+  tpr: 1.0
+  fdr: 0.0
