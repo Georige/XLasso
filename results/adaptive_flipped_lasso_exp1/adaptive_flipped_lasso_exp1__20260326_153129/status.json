@@ -1,0 +1,17 @@
+{
+  "status": "completed",
+  "experiment": "adaptive_flipped_lasso_exp1",
+  "algo": "adaptive_flipped_lasso",
+  "created_at": "2026-03-26T15:31:29.753948",
+  "n_folds": 5,
+  "completed_folds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "current_fold": 4,
+  "config_path": "results/adaptive_flipped_lasso_exp1/adaptive_flipped_lasso_exp1__20260326_153129/config.yaml",
+  "completed_at": "2026-03-26T15:31:30.296943"
+}

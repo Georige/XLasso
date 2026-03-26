@@ -1,0 +1,29 @@
+# Benchmark: UniLasso
+experiment: benchmark_unilasso
+description: "Benchmark UniLasso on Exp1 with varying SNR"
+algo: unilasso
+
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: pairwise
+rho: 0.5
+random_state: 42
+
+n_repeats: 10
+cv_folds: 5
+
+search_space:
+  sigma: [0.1, 0.5, 1.0, 1.5, 2.0, 3.0]
+
+# Standard config
+lambda_1: 0.01
+lambda_2: 0.01
+group_threshold: 0.7
+standardize: true
+fit_intercept: true
+family: gaussian
+backend: numba
+max_iter: 2000
+
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark

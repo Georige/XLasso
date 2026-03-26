@@ -1,0 +1,42 @@
+experiment: benchmark_adaptive_sparse_group_lasso
+generated_by: sweep.py stage1
+generated_at: '2026-03-26T17:29:02.317966'
+base_config: configs/benchmark/benchmark_adaptive_sparse_group_lasso.yaml
+search_space:
+  sigma:
+  - 0.1
+  - 0.5
+  - 1.0
+  - 1.5
+  - 2.0
+  - 3.0
+best_structural_region:
+  sigma:
+  - 0.1
+  - 1.0
+structural_insight:
+- sigma is negatively correlated with F1 (r=-0.845)
+- 'Best sigma range: [0.100000, 1.000000]'
+best_grid_point:
+  sigma: !!python/object/apply:numpy.core.multiarray.scalar
+  - !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    mpmZmZmZuT8=
+best_metrics:
+  f1: 0.9062476009844431
+  mse: 164.13088192399866
+  tpr: 0.8300000000000001
+  fdr: 0.0

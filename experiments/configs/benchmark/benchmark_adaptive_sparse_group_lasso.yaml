@@ -1,0 +1,26 @@
+# Benchmark: AdaptiveSparseGroupLasso
+experiment: benchmark_adaptive_sparse_group_lasso
+description: "Benchmark AdaptiveSparseGroupLasso on Exp1 with varying SNR"
+algo: adaptive_sparse_group_lasso
+
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: pairwise
+rho: 0.5
+random_state: 42
+
+n_repeats: 10
+cv_folds: 5
+
+search_space:
+  sigma: [0.1, 0.5, 1.0, 1.5, 2.0, 3.0]
+
+# Standard config
+lambda_: 0.01
+standardize: true
+fit_intercept: true
+max_iter: 2000
+tol: 0.0001
+
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark

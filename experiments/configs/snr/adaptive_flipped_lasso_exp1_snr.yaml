@@ -1,0 +1,43 @@
+# AdaptiveFlippedLasso SNR Sensitivity Experiment
+# ================================================
+# Usage:
+#   python factory/sweep.py stage1 --config configs/snr/adaptive_flipped_lasso_exp1_snr.yaml
+
+experiment: adaptive_flipped_lasso_exp1_snr
+description: "SNR sensitivity analysis for AdaptiveFlippedLasso on Exp1"
+algo: adaptive_flipped_lasso
+
+# Data generation parameters (Exp1 settings)
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: pairwise
+rho: 0.5
+random_state: 42
+
+# SNR settings - sigma varies to create different SNR regimes
+# Signal strength fixed: first 20 vars with β=1.0
+# SNR ∝ 1/σ², so lower sigma = higher SNR
+
+# Cross-validation settings (no CV, single split per repeat)
+n_repeats: 20
+cv_folds: 1
+
+# Primary metric
+primary_metric: f1
+
+# SNR values to test (sigma)
+search_space:
+  sigma: [0.1, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0]
+
+# Best config from Stage1 (fixed)
+lambda_ridge: 10.0
+lambda_: 1.0
+gamma: 0.5
+alpha_min_ratio: 0.0001
+n_alpha: 50
+max_iter: 2000
+tol: 0.0001
+
+# Output settings
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/snr

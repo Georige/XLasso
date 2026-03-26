@@ -45,6 +45,10 @@ from experiments.modules import (
     GroupLassoCV,
     AdaptiveSparseGroupLasso,
     AdaptiveSparseGroupLassoCV,
+    Lasso,
+    LassoCV,
+    UniLasso,
+    UniLassoCV,
     DataGenerator,
     MetricCalculator,
     CrossValidator,
@@ -62,6 +66,12 @@ ALGO_REGISTRY = {
     "adaptive_flipped_lasso": AdaptiveFlippedLasso,
     "aflclassifier": AdaptiveFlippedLassoClassifier,
     "aflclassifier_cv": AdaptiveFlippedLassoCV,
+    # Standard Lasso
+    "lasso": Lasso,
+    "lasso_cv": LassoCV,
+    # UniLasso
+    "unilasso": UniLasso,
+    "unilasso_cv": UniLassoCV,
     # Other Lasso variants
     "adaptive_lasso": AdaptiveLasso,
     "adaptive_lasso_cv": AdaptiveLassoCV,
@@ -277,6 +287,23 @@ def get_algo_params(algo_name, config):
             "alpha": config.get("lambda_", 0.01),
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name in ["lasso", "lasso_cv"]:
+        # Standard sklearn Lasso parameters
+        params.update({
+            "alpha": config.get("lambda_", 0.01),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name in ["unilasso", "unilasso_cv"]:
+        # UniLasso parameters (lambda_1, lambda_2, group_threshold)
+        params.update({
+            "lambda_1": config.get("lambda_1", 0.01),
+            "lambda_2": config.get("lambda_2", 0.01),
+            "group_threshold": config.get("group_threshold", 0.7),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "family": config.get("family", "gaussian"),
         })
     else:
         # Default fallback
