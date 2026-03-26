@@ -4,6 +4,8 @@ Two-Stage Hyperparameter Tuning Driver
 ======================================
 Stage1: Grid search to identify optimal structural region
 Stage2: Fine-grained search with CV within the optimal region
+SNR:    Signal-to-noise ratio sensitivity analysis
+Benchmark: Compare AdaptiveFlippedLasso vs other models' CV versions
 
 Usage:
     # Stage 1: Coarse grid search
@@ -11,6 +13,12 @@ Usage:
 
     # Stage 2: Fine CV search within Stage1's optimal region
     python factory/sweep.py stage2 --config configs/stage2/example_cv.yaml
+
+    # SNR study: Analyze performance across different noise levels
+    python factory/sweep.py snr --config configs/snr/example_snr.yaml
+
+    # Benchmark: Compare AdaptiveFlippedLasso (optimal params) vs other models' CV versions
+    python factory/sweep.py benchmark --config configs/benchmark/example_benchmark.yaml
 """
 
 import argparse
@@ -35,8 +43,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Two-stage hyperparameter tuning")
     parser.add_argument(
         "stage",
-        choices=["stage1", "stage2"],
-        help="Stage to run: stage1 (grid search) or stage2 (fine CV tuning)",
+        choices=["stage1", "stage2", "snr", "benchmark"],
+        help="Stage to run: stage1 (grid search), stage2 (fine CV tuning), snr (SNR sensitivity), or benchmark (model comparison)",
     )
     parser.add_argument(
         "--config", "-c", required=True, help="Path to config YAML file"
@@ -262,7 +270,9 @@ def run_trial(config, parent_dir):
     metrics_list = []
 
     for repeat in range(n_repeats):
-        random_state = 42 + repeat
+        # Use random_state_base if provided, otherwise default to 42
+        random_state_base = config.get("random_state_base", 42)
+        random_state = random_state_base + repeat
 
         # Generate data
         data_gen = DataGenerator(random_state=random_state)
@@ -508,6 +518,787 @@ def run_stage2(config_path, output_dir=None, dry_run=False):
     return cv_fine_tuning(config)
 
 
+def snr_study(config):
+    """
+    SNR Sensitivity Analysis: Study performance across different noise levels.
+    Uses fixed best parameters from stage1 and varies sigma to analyze SNR effects.
+    """
+    print("[sweep:snr] Starting SNR Sensitivity Analysis")
+    print(f"[sweep:snr] Config: {config['experiment']}")
+
+    search_space = config.get("search_space", {})
+    if "sigma" not in search_space:
+        raise ValueError("SNR study requires 'sigma' in search_space")
+
+    # Extract sigma values
+    sigma_values = search_space["sigma"] if isinstance(search_space["sigma"], list) else [search_space["sigma"]]
+    print(f"[sweep:snr] SNR values: {sigma_values}")
+
+    # Fixed parameters (should be in config)
+    fixed_params = {
+        "lambda_ridge": config.get("lambda_ridge", 10.0),
+        "lambda_": config.get("lambda_", 1.0),
+        "gamma": config.get("gamma", 0.5),
+    }
+    print(f"[sweep:snr] Fixed params: {fixed_params}")
+
+    # Generate experiment directory
+    config["output_dir"] = config.get("output_dir", "/home/lili/lyn/clear/NLasso/XLasso/experiments/results/snr")
+    exp_dir = generate_experiment_dir(config)
+    save_config(config, exp_dir)
+
+    all_results = []
+    n_repeats = config.get("n_repeats", 5)
+
+    for sigma in sigma_values:
+        print(f"\n[sweep:snr] Testing sigma={sigma} (SNR={1.0/sigma:.2f})...")
+
+        for repeat in range(n_repeats):
+            trial_config = {
+                **config,
+                **fixed_params,
+                "sigma": sigma,
+                "n_repeats": 1,  # run_trial handles repeats internally
+                "random_state_base": repeat,  # Each call gets different data
+            }
+            trial_config["experiment"] = f"{config['experiment']}_sigma{sigma}_r{repeat}"
+
+            try:
+                result = run_trial(trial_config, exp_dir)
+
+                if result and result.get("n_folds_completed", 0) > 0:
+                    individual = result.get("individual_metrics", [])
+                    for repeat_idx, repeat_metrics in enumerate(individual):
+                        result_entry = {
+                            "sigma": sigma,
+                            "snr": 1.0 / sigma,
+                            "repeat": repeat,
+                            **fixed_params,
+                            **repeat_metrics,
+                        }
+                        all_results.append(result_entry)
+
+            except Exception as e:
+                print(f"[sweep:snr] ERROR at sigma={sigma}, repeat={repeat}: {e}")
+                traceback.print_exc()
+                continue
+
+    if not all_results:
+        raise RuntimeError("No successful trials in SNR study")
+
+    # Save raw results
+    results_df = pd.DataFrame(all_results)
+    raw_path = exp_dir / "raw.csv"
+    results_df.to_csv(raw_path, index=False)
+
+    # Generate summary statistics
+    summary = generate_snr_summary(results_df, exp_dir)
+
+    # Generate sensitivity analysis
+    sensitivity = analyze_snr_sensitivity(results_df)
+
+    # Generate best SNR config
+    best_config_path = generate_best_config_snr(config, exp_dir, results_df, summary, sensitivity)
+
+    print(f"\n[sweep:snr] Completed!")
+    print(f"[sweep:snr] Results saved to {exp_dir}")
+    print(f"[sweep:snr] Best config: {best_config_path}")
+    print(f"\n[sweep:snr] Summary:")
+    print(summary.to_string())
+
+    return {
+        "status": "completed",
+        "exp_dir": str(exp_dir),
+        "best_config": str(best_config_path),
+        "n_trials": len(all_results),
+    }
+
+
+def generate_snr_summary(results_df, exp_dir):
+    """Generate summary statistics for SNR study."""
+    summary = results_df.groupby('sigma').agg({
+        'f1': ['mean', 'std'],
+        'mse': ['mean', 'std'],
+        'tpr': ['mean', 'std'],
+        'fdr': ['mean', 'std'],
+        'precision': ['mean', 'std'],
+        'recall': ['mean', 'std'],
+        'r2': ['mean', 'std'],
+    }).round(4)
+
+    summary.columns = ['_'.join(col) for col in summary.columns]
+    summary = summary.reset_index()
+    summary['snr'] = (1.0 / summary['sigma']).round(2)
+
+    summary_path = exp_dir / "summary.csv"
+    summary.to_csv(summary_path, index=False)
+
+    return summary
+
+
+def analyze_snr_sensitivity(results_df):
+    """Analyze sensitivity of metrics to sigma changes."""
+    sensitivity = {}
+
+    metrics = ['f1', 'mse', 'tpr', 'fdr', 'precision', 'recall', 'r2']
+    for metric in metrics:
+        if metric in results_df.columns:
+            corr = results_df['sigma'].corr(results_df[metric])
+            sensitivity[f"{metric}_corr"] = round(corr, 4)
+
+    return sensitivity
+
+
+def generate_best_config_snr(config, exp_dir, results_df, summary, sensitivity):
+    """Generate best config for SNR study."""
+    # Find best sigma (highest mean F1)
+    best_sigma = summary.loc[summary['f1_mean'].idxmax(), 'sigma']
+
+    best_config = {
+        "experiment": config["experiment"],
+        "generated_by": "sweep.py snr",
+        "generated_at": datetime.now().isoformat(),
+        "base_config": str(config.get("config_path", "")),
+        "search_space": config.get("search_space", {}),
+        "fixed_params": {
+            "lambda_ridge": config.get("lambda_ridge", 10.0),
+            "lambda_": config.get("lambda_", 1.0),
+            "gamma": config.get("gamma", 0.5),
+        },
+        "best_snr_region": {
+            "sigma": [summary['sigma'].min(), summary['sigma'].max()],
+            "snr": [1.0/summary['sigma'].max(), 1.0/summary['sigma'].min()],
+        },
+        "sensitivity_analysis": sensitivity,
+        "summary": summary.to_dict('records'),
+    }
+
+    best_path = Path("configs/snr") / f"{config['experiment']}_best.yaml"
+    best_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(best_path, "w") as f:
+        yaml.dump(best_config, f, default_flow_style=False, sort_keys=False)
+
+    return best_path
+
+
+def run_snr(config_path, output_dir=None, dry_run=False):
+    """Run SNR study."""
+    config = load_config(config_path)
+    if output_dir:
+        config["output_dir"] = output_dir
+    config["config_path"] = config_path
+
+    return snr_study(config)
+
+
+def benchmark_study(config):
+    """
+    Benchmark: Compare AdaptiveFlippedLasso (optimal params) vs other models' CV versions.
+    Uses exp2 data configuration (AR(1), rho=0.8) across different SNR values.
+    """
+    print("[sweep:benchmark] Starting Benchmark Comparison")
+    print(f"[sweep:benchmark] Config: {config['experiment']}")
+
+    search_space = config.get("search_space", {})
+    if "sigma" not in search_space:
+        raise ValueError("Benchmark requires 'sigma' in search_space")
+
+    sigma_values = search_space["sigma"] if isinstance(search_space["sigma"], list) else [search_space["sigma"]]
+    print(f"[sweep:benchmark] SNR values: {sigma_values}")
+
+    # AdaptiveFlippedLasso optimal params from stage1
+    afl_params = {
+        "lambda_ridge": config.get("lambda_ridge", 1.0),
+        "lambda_": config.get("lambda_", 1.0),
+        "gamma": config.get("gamma", 0.5),
+    }
+    print(f"[sweep:benchmark] AdaptiveFlippedLasso params: {afl_params}")
+
+    # Models to compare (algorithm name -> display name, use_cv flag)
+    models_to_compare = config.get("compare_models", [
+        {"algo": "adaptive_flipped_lasso", "display": "AdaptiveFlippedLasso", "params": afl_params, "cv": False},
+        {"algo": "lasso_cv", "display": "LassoCV", "params": {}, "cv": True},
+        {"algo": "nlasso_cv", "display": "NLassoCV", "params": {}, "cv": True},
+        {"algo": "adaptive_lasso_cv", "display": "AdaptiveLassoCV", "params": {}, "cv": True},
+        {"algo": "group_lasso_cv", "display": "GroupLassoCV", "params": {}, "cv": True},
+        {"algo": "unilasso_cv", "display": "UniLassoCV", "params": {}, "cv": True},
+    ])
+    print(f"[sweep:benchmark] Comparing {len(models_to_compare)} models")
+
+    # Generate experiment directory
+    config["output_dir"] = config.get("output_dir", "/home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark")
+    exp_dir = generate_experiment_dir(config)
+    save_config(config, exp_dir)
+
+    all_results = []
+    n_repeats = config.get("n_repeats", 5)
+
+    for sigma in sigma_values:
+        print(f"\n[sweep:benchmark] Testing sigma={sigma} (SNR={1.0/sigma:.2f})...")
+
+        for model_info in models_to_compare:
+            algo_name = model_info["algo"]
+            display_name = model_info["display"]
+            use_cv = model_info.get("cv", False)
+            model_params = model_info.get("params", {})
+
+            print(f"  [sweep:benchmark] Model: {display_name} ({'CV' if use_cv else 'fixed'})")
+
+            for repeat in range(n_repeats):
+                trial_config = {
+                    **config,
+                    **model_params,
+                    "algo": algo_name,
+                    "sigma": sigma,
+                    "n_repeats": 1,
+                    "random_state_base": repeat,
+                    "cv_folds": 5 if use_cv else 1,
+                }
+                trial_config["experiment"] = f"{config['experiment']}_sigma{sigma}_{algo_name}_r{repeat}"
+
+                try:
+                    result = run_benchmark_trial(trial_config, exp_dir)
+
+                    if result and result.get("n_folds_completed", 0) > 0:
+                        individual = result.get("individual_metrics", [])
+                        for repeat_idx, repeat_metrics in enumerate(individual):
+                            result_entry = {
+                                "sigma": sigma,
+                                "snr": round(1.0 / sigma, 2),
+                                "repeat": repeat,
+                                "model": display_name,
+                                "algo": algo_name,
+                                "use_cv": use_cv,
+                                **repeat_metrics,
+                            }
+                            all_results.append(result_entry)
+
+                except Exception as e:
+                    print(f"  [sweep:benchmark] ERROR at sigma={sigma}, model={display_name}, repeat={repeat}: {e}")
+                    traceback.print_exc()
+                    continue
+
+    if not all_results:
+        raise RuntimeError("No successful trials in benchmark")
+
+    # Save raw results
+    results_df = pd.DataFrame(all_results)
+    raw_path = exp_dir / "raw.csv"
+    results_df.to_csv(raw_path, index=False)
+
+    # Generate summary statistics by model and sigma
+    summary = generate_benchmark_summary(results_df, exp_dir)
+
+    # Generate rankings
+    rankings = generate_benchmark_rankings(results_df, exp_dir)
+
+    # Generate report
+    report_path = generate_benchmark_report(config, exp_dir, results_df, summary, rankings)
+
+    print(f"\n[sweep:benchmark] Completed!")
+    print(f"[sweep:benchmark] Results saved to {exp_dir}")
+    print(f"[sweep:benchmark] Report: {report_path}")
+
+    return {
+        "status": "completed",
+        "exp_dir": str(exp_dir),
+        "report": str(report_path),
+        "n_trials": len(all_results),
+    }
+
+
+def get_benchmark_algo_params(algo_name, config):
+    """Get algorithm-specific parameters for benchmark - handles CV variants correctly."""
+    from experiments.modules import (
+        NLasso,
+        NLassoClassifier,
+        NLassoCV,
+        NLassoClassifierCV,
+        AdaptiveFlippedLasso,
+        AdaptiveFlippedLassoClassifier,
+        AdaptiveFlippedLassoCV,
+        AdaptiveLasso,
+        AdaptiveLassoCV,
+        FusedLasso,
+        FusedLassoCV,
+        GroupLasso,
+        GroupLassoCV,
+        AdaptiveSparseGroupLasso,
+        AdaptiveSparseGroupLassoCV,
+        Lasso,
+        LassoCV,
+        UniLasso,
+        UniLassoCV,
+    )
+
+    # Common parameters
+    params = {
+        "standardize": True,
+        "fit_intercept": True,
+    }
+
+    if algo_name == "nlasso":
+        params.update({
+            "lambda_ridge": config.get("lambda_ridge", 10.0),
+            "lambda_": config.get("lambda_", 0.01),
+            "gamma": config.get("gamma", 0.3),
+            "s": config.get("s", 1.0),
+            "group_threshold": config.get("group_threshold", 0.7),
+            "group_min_size": config.get("group_min_size", 2),
+            "group_max_size": config.get("group_max_size", 10),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "nlasso_cv":
+        params.update({
+            "cv": config.get("cv_folds", 5),
+            "param_grid": {
+                'lambda_ridge': [1.0, 10.0],
+                'gamma': [0.3, 0.5],
+                's': [0.5, 1.0],
+                'group_threshold': [0.7],
+            },
+            "random_state": config.get("random_state", 42),
+        })
+    elif algo_name == "adaptive_flipped_lasso":
+        params.update({
+            "lambda_ridge": config.get("lambda_ridge", 10.0),
+            "lambda_": config.get("lambda_", 0.01),
+            "gamma": config.get("gamma", 1.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "aflclassifier_cv":
+        params.update({
+            "lambda_ridge": config.get("lambda_ridge", 10.0),
+            "lambda_min_ratio": config.get("lambda_min_ratio", 1e-4),
+            "n_lambda": config.get("n_lambda", 50),
+            "cv": config.get("cv_folds", 5),
+            "gamma": config.get("gamma", 1.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "adaptive_lasso":
+        params.update({
+            "alpha": config.get("lambda_", 0.01),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "adaptive_lasso_cv":
+        params.update({
+            "alphas": np.logspace(-4, 1, 30),
+            "gammas": [0.5, 1.0, 2.0],
+            "cv": config.get("cv_folds", 5),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "lasso":
+        params.update({
+            "alpha": config.get("lambda_", 0.01),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "lasso_cv":
+        params.update({
+            "alphas": np.logspace(-4, 1, 30),
+            "cv": config.get("cv_folds", 5),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+            "random_state": config.get("random_state", 42),
+        })
+    elif algo_name == "fused_lasso":
+        params.update({
+            "alpha": config.get("lambda_", 0.01),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "group_lasso":
+        params.update({
+            "alpha": config.get("lambda_", 0.01),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "group_lasso_cv":
+        params.update({
+            "alphas": np.logspace(-4, 1, 30),
+            "cv": config.get("cv_folds", 5),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "unilasso":
+        params.update({
+            "lambda_1": config.get("lambda_1", 0.01),
+            "lambda_2": config.get("lambda_2", 0.01),
+            "group_threshold": config.get("group_threshold", 0.7),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "family": config.get("family", "gaussian"),
+        })
+    elif algo_name == "unilasso_cv":
+        params.update({
+            "lambda_1": config.get("lambda_1", 0.01),
+            "lambda_2": config.get("lambda_2", 0.01),
+            "group_threshold": config.get("group_threshold", 0.7),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "family": config.get("family", "gaussian"),
+        })
+    else:
+        params.update({
+            "alpha": config.get("lambda_", 0.01),
+        })
+
+    return params
+
+
+def run_benchmark_trial(config, parent_dir):
+    """Run a single benchmark trial with correct params for each algorithm."""
+    from experiments.factory.run import ALGO_REGISTRY
+    from experiments.modules import (
+        MetricCalculator,
+        CrossValidator,
+        DataGenerator,
+    )
+    import time
+
+    n_folds = config.get("cv_folds", 5)
+    n_repeats = config.get("n_repeats", 1)
+
+    # Use correct params for each algo
+    algo_name = config["algo"].lower()
+    algo_params = get_benchmark_algo_params(algo_name, config)
+
+    metrics_list = []
+
+    for repeat in range(n_repeats):
+        random_state_base = config.get("random_state_base", 42)
+        random_state = random_state_base + repeat
+
+        # Generate data
+        data_gen = DataGenerator(random_state=random_state)
+        X, y, beta_true = data_gen.generate(
+            n_samples=config["n_samples"],
+            n_features=config["n_features"],
+            n_nonzero=config["n_nonzero"],
+            sigma=config.get("sigma", 1.0),
+            correlation_type=config.get("correlation_type", "pairwise"),
+            rho=config.get("rho", 0.5),
+        )
+
+        # Get algorithm
+        algo_class = ALGO_REGISTRY.get(algo_name)
+        if algo_class is None:
+            raise ValueError(f"Unknown algorithm: {algo_name}")
+
+        # Initialize algorithm with correct params
+        algo = algo_class(**algo_params)
+
+        if n_folds == 1:
+            # Single split (no CV): use train_test_split equivalent
+            from sklearn.model_selection import train_test_split
+            train_idx, test_idx = train_test_split(
+                np.arange(len(y)),
+                test_size=0.2,
+                random_state=random_state,
+                shuffle=True
+            )
+            X_train, X_test = X[train_idx], X[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
+
+            # Fit
+            start_time = time.time()
+            algo.fit(X_train, y_train)
+            train_time = time.time() - start_time
+
+            # Predict
+            y_pred = algo.predict(X_test)
+
+            # Calculate metrics
+            metrics_calc = MetricCalculator()
+            fold_metrics = metrics_calc.calculate(
+                y_true=y_test,
+                y_pred=y_pred,
+                beta_true=beta_true,
+                beta_est=algo.coef_,
+            )
+            fold_metrics["fold"] = repeat
+            fold_metrics["train_time"] = train_time
+            metrics_list.append(fold_metrics)
+        else:
+            # CV
+            cv = CrossValidator(n_folds=n_folds, shuffle=True, random_state=42 + repeat)
+            repeat_metrics = []
+
+            for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X)):
+                X_train, X_test = X[train_idx], X[test_idx]
+                y_train, y_test = y[train_idx], y[test_idx]
+
+                # Initialize fresh algo instance for each fold
+                algo_fold = algo_class(**algo_params)
+
+                # Fit
+                start_time = time.time()
+                algo_fold.fit(X_train, y_train)
+                train_time = time.time() - start_time
+
+                # Predict
+                y_pred = algo_fold.predict(X_test)
+
+                # Calculate metrics
+                metrics_calc = MetricCalculator()
+                fold_metrics = metrics_calc.calculate(
+                    y_true=y_test,
+                    y_pred=y_pred,
+                    beta_true=beta_true,
+                    beta_est=algo_fold.coef_,
+                )
+                fold_metrics["fold"] = fold_idx
+                fold_metrics["train_time"] = train_time
+                repeat_metrics.append(fold_metrics)
+
+            # Average across folds
+            metrics_df = pd.DataFrame(repeat_metrics)
+            avg_metrics = metrics_df.mean().to_dict()
+            metrics_list.append(avg_metrics)
+
+    # Average across repeats
+    final_metrics = pd.DataFrame(metrics_list).mean().to_dict()
+
+    return {
+        "n_folds_completed": n_folds,
+        "metrics": final_metrics,
+        "individual_metrics": metrics_list,
+        "n_repeats_completed": n_repeats,
+    }
+
+
+def generate_benchmark_summary(results_df, exp_dir):
+    """Generate summary statistics for benchmark by model and sigma."""
+    # Overall summary by model
+    model_summary = results_df.groupby('model').agg({
+        'f1': ['mean', 'std'],
+        'mse': ['mean', 'std'],
+        'tpr': ['mean', 'std'],
+        'fdr': ['mean', 'std'],
+        'precision': ['mean', 'std'],
+        'recall': ['mean', 'std'],
+        'r2': ['mean', 'std'],
+        'sparsity': ['mean', 'std'],
+        'n_selected': ['mean', 'std'],
+    }).round(4)
+    model_summary.columns = ['_'.join(col) for col in model_summary.columns]
+    model_summary = model_summary.reset_index()
+
+    # Summary by sigma and model
+    sigma_model_summary = results_df.groupby(['sigma', 'snr', 'model']).agg({
+        'f1': ['mean', 'std'],
+        'mse': ['mean', 'std'],
+        'tpr': ['mean', 'std'],
+        'fdr': ['mean', 'std'],
+        'precision': ['mean', 'std'],
+        'recall': ['mean', 'std'],
+        'r2': ['mean', 'std'],
+    }).round(4)
+    sigma_model_summary.columns = ['_'.join(col) for col in sigma_model_summary.columns]
+    sigma_model_summary = sigma_model_summary.reset_index()
+
+    # Save summaries
+    model_summary_path = exp_dir / "summary_by_model.csv"
+    model_summary.to_csv(model_summary_path, index=False)
+
+    sigma_model_summary_path = exp_dir / "summary_by_sigma_model.csv"
+    sigma_model_summary.to_csv(sigma_model_summary_path, index=False)
+
+    return {
+        "by_model": model_summary,
+        "by_sigma_model": sigma_model_summary,
+    }
+
+
+def generate_benchmark_rankings(results_df, exp_dir):
+    """Generate rankings for benchmark metrics."""
+    rankings = {}
+
+    # Rank by overall F1 (higher is better)
+    model_f1 = results_df.groupby('model')['f1'].mean().sort_values(ascending=False)
+    rankings['by_f1'] = {f"rank_{i+1}": {"model": m, "f1": round(f1, 4)} for i, (m, f1) in enumerate(model_f1.items())}
+
+    # Rank by overall MSE (lower is better)
+    model_mse = results_df.groupby('model')['mse'].mean().sort_values(ascending=True)
+    rankings['by_mse'] = {f"rank_{i+1}": {"model": m, "mse": round(mse, 4)} for i, (m, mse) in enumerate(model_mse.items())}
+
+    # Rank by FDR (lower is better)
+    model_fdr = results_df.groupby('model')['fdr'].mean().sort_values(ascending=True)
+    rankings['by_fdr'] = {f"rank_{i+1}": {"model": m, "fdr": round(fdr, 4)} for i, (m, fdr) in enumerate(model_fdr.items())}
+
+    # Rank by TPR (higher is better)
+    model_tpr = results_df.groupby('model')['tpr'].mean().sort_values(ascending=False)
+    rankings['by_tpr'] = {f"rank_{i+1}": {"model": m, "tpr": round(tpr, 4)} for i, (m, tpr) in enumerate(model_tpr.items())}
+
+    # Save rankings
+    rankings_path = exp_dir / "rankings.yaml"
+    with open(rankings_path, "w") as f:
+        yaml.dump(rankings, f, default_flow_style=False, sort_keys=False)
+
+    return rankings
+
+
+def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
+    """Generate comprehensive benchmark report in markdown."""
+    report_path = exp_dir / "benchmark_report.md"
+
+    with open(report_path, "w") as f:
+        f.write(f"# AdaptiveFlippedLasso Benchmark Report\n\n")
+        f.write(f"**Date**: {datetime.now().strftime('%Y-%m-%d')}\n")
+        f.write(f"**Experiment**: {config['experiment']}\n")
+        f.write(f"**Data**: Exp2 (AR(1), rho=0.8, n=300, p=500, 20 non-zero)\n")
+        f.write(f"**Repeats**: {config.get('n_repeats', 5)} per configuration\n\n")
+
+        f.write("## 1. AdaptiveFlippedLasso Optimal Parameters\n\n")
+        f.write("From Stage1 grid search:\n")
+        f.write(f"- lambda_ridge: {config.get('lambda_ridge', 1.0)}\n")
+        f.write(f"- lambda_: {config.get('lambda_', 1.0)}\n")
+        f.write(f"- gamma: {config.get('gamma', 0.5)}\n\n")
+
+        f.write("## 2. Compared Models\n\n")
+        models = results_df['model'].unique()
+        for m in models:
+            use_cv = results_df[results_df['model'] == m]['use_cv'].iloc[0]
+            f.write(f"- **{m}** ({'CV-tuned' if use_cv else 'fixed params'})\n")
+        f.write("\n")
+
+        f.write("## 3. Overall Performance by Model\n\n")
+        f.write("### 3.1 F1 Score (higher is better)\n\n")
+        model_f1 = results_df.groupby('model')['f1'].agg(['mean', 'std']).sort_values('mean', ascending=False)
+        f.write("| Model | F1 Mean | F1 Std |\n")
+        f.write("|-------|---------|--------|\n")
+        for model, row in model_f1.iterrows():
+            f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+        f.write("\n")
+
+        f.write("### 3.2 MSE (lower is better)\n\n")
+        model_mse = results_df.groupby('model')['mse'].agg(['mean', 'std']).sort_values('mean', ascending=True)
+        f.write("| Model | MSE Mean | MSE Std |\n")
+        f.write("|-------|----------|--------|\n")
+        for model, row in model_mse.iterrows():
+            f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+        f.write("\n")
+
+        f.write("### 3.3 TPR - True Positive Rate (higher is better)\n\n")
+        model_tpr = results_df.groupby('model')['tpr'].agg(['mean', 'std']).sort_values('mean', ascending=False)
+        f.write("| Model | TPR Mean | TPR Std |\n")
+        f.write("|-------|----------|--------|\n")
+        for model, row in model_tpr.iterrows():
+            f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+        f.write("\n")
+
+        f.write("### 3.4 FDR - False Discovery Rate (lower is better)\n\n")
+        model_fdr = results_df.groupby('model')['fdr'].agg(['mean', 'std']).sort_values('mean', ascending=True)
+        f.write("| Model | FDR Mean | FDR Std |\n")
+        f.write("|-------|----------|--------|\n")
+        for model, row in model_fdr.iterrows():
+            f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+        f.write("\n")
+
+        f.write("## 4. Performance Across SNR Levels\n\n")
+        f.write("### 4.1 F1 by Sigma\n\n")
+        sigma_model_f1 = results_df.pivot_table(values='f1', index='sigma', columns='model', aggfunc='mean')
+        sigma_model_f1 = sigma_model_f1.round(4)
+        f.write(sigma_model_f1.to_markdown() + "\n\n")
+
+        f.write("### 4.2 MSE by Sigma\n\n")
+        sigma_model_mse = results_df.pivot_table(values='mse', index='sigma', columns='model', aggfunc='mean')
+        sigma_model_mse = sigma_model_mse.round(4)
+        f.write(sigma_model_mse.to_markdown() + "\n\n")
+
+        f.write("### 4.3 TPR by Sigma\n\n")
+        sigma_model_tpr = results_df.pivot_table(values='tpr', index='sigma', columns='model', aggfunc='mean')
+        sigma_model_tpr = sigma_model_tpr.round(4)
+        f.write(sigma_model_tpr.to_markdown() + "\n\n")
+
+        f.write("### 4.4 FDR by Sigma\n\n")
+        sigma_model_fdr = results_df.pivot_table(values='fdr', index='sigma', columns='model', aggfunc='mean')
+        sigma_model_fdr = sigma_model_fdr.round(4)
+        f.write(sigma_model_fdr.to_markdown() + "\n\n")
+
+        f.write("## 5. Complete Metrics Summary\n\n")
+        f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 |\n")
+        f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|\n")
+        for sigma in sorted(results_df['sigma'].unique()):
+            for model in models:
+                subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
+                if len(subset) > 0:
+                    snr = subset['snr'].iloc[0]
+                    f1 = subset['f1'].mean()
+                    mse = subset['mse'].mean()
+                    tpr = subset['tpr'].mean()
+                    fdr = subset['fdr'].mean()
+                    prec = subset['precision'].mean()
+                    rec = subset['recall'].mean()
+                    r2 = subset['r2'].mean()
+                    f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} |\n")
+        f.write("\n")
+
+        f.write("## 6. Rankings Summary\n\n")
+        f.write("### 6.1 By F1 (higher is better)\n\n")
+        for rank, data in rankings['by_f1'].items():
+            f.write(f"- {rank}: {data['model']} (F1={data['f1']:.4f})\n")
+        f.write("\n")
+
+        f.write("### 6.2 By MSE (lower is better)\n\n")
+        for rank, data in rankings['by_mse'].items():
+            f.write(f"- {rank}: {data['model']} (MSE={data['mse']:.4f})\n")
+        f.write("\n")
+
+        f.write("## 7. Key Findings\n\n")
+        best_f1_model = rankings['by_f1']['rank_1']['model']
+        best_f1_val = rankings['by_f1']['rank_1']['f1']
+        best_mse_model = rankings['by_mse']['rank_1']['model']
+        best_mse_val = rankings['by_mse']['rank_1']['mse']
+
+        f.write(f"1. **Best F1**: {best_f1_model} with F1={best_f1_val:.4f}\n")
+        f.write(f"2. **Best MSE**: {best_mse_model} with MSE={best_mse_val:.4f}\n")
+
+        # SNR sensitivity analysis
+        high_snr = results_df[results_df['sigma'] <= 0.5]
+        low_snr = results_df[results_df['sigma'] >= 2.0]
+        if len(high_snr) > 0 and len(low_snr) > 0:
+            high_snr_f1 = high_snr.groupby('model')['f1'].mean()
+            low_snr_f1 = low_snr.groupby('model')['f1'].mean()
+            f.write("\n3. **SNR Sensitivity**:\n")
+            for model in models:
+                if model in high_snr_f1 and model in low_snr_f1:
+                    drop = high_snr_f1[model] - low_snr_f1[model]
+                    f.write(f"   - {model}: F1 drop = {drop:.4f} (high SNR to low SNR)\n")
+
+        f.write("\n---\n")
+        f.write(f"*Report generated: {datetime.now().isoformat()}*\n")
+
+    return report_path
+
+
+def run_benchmark(config_path, output_dir=None, dry_run=False):
+    """Run benchmark comparison."""
+    config = load_config(config_path)
+    if output_dir:
+        config["output_dir"] = output_dir
+    config["config_path"] = config_path
+
+    if dry_run:
+        print("[sweep:benchmark] Dry-run mode - validation only")
+        print(f"[sweep:benchmark] Config: {config['experiment']}")
+        print(f"[sweep:benchmark] SNR values: {config.get('search_space', {}).get('sigma', [])}")
+        print(f"[sweep:benchmark] Models to compare: {len(config.get('compare_models', []))}")
+        return {"status": "dry_run", "config": config}
+
+    return benchmark_study(config)
+
+
 def main():
     args = parse_args()
 
@@ -518,8 +1309,20 @@ def main():
                 output_dir=args.output_dir,
                 dry_run=args.dry_run,
             )
-        else:
+        elif args.stage == "stage2":
             result = run_stage2(
+                config_path=args.config,
+                output_dir=args.output_dir,
+                dry_run=args.dry_run,
+            )
+        elif args.stage == "benchmark":
+            result = run_benchmark(
+                config_path=args.config,
+                output_dir=args.output_dir,
+                dry_run=args.dry_run,
+            )
+        else:  # snr
+            result = run_snr(
                 config_path=args.config,
                 output_dir=args.output_dir,
                 dry_run=args.dry_run,

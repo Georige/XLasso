@@ -1,0 +1,67 @@
+# Benchmark Config - AdaptiveFlippedLasso vs Other Models (fixed params)
+# ====================================================================
+# Usage:
+#   python factory/sweep.py benchmark --config configs/benchmark/adaptive_flipped_lasso_exp2_benchmark.yaml
+
+experiment: adaptive_flipped_lasso_exp2_benchmark
+description: "Exp2 Benchmark - AdaptiveFlippedLasso (optimal params) vs other models"
+algo: adaptive_flipped_lasso  # Placeholder - benchmark mode uses compare_models
+
+# Data generation parameters (Exp2: AR(1) correlation)
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: ar1
+rho: 0.8
+random_state: 42
+
+# AdaptiveFlippedLasso optimal params from stage1
+lambda_ridge: 1.0
+lambda_: 1.0
+gamma: 0.5
+
+# Benchmark settings
+n_repeats: 5
+cv_folds: 1  # Single train/test split (no slow CV)
+
+# SNR study settings
+search_space:
+  sigma: [0.1, 0.5, 1.0, 2.0, 3.0]
+
+# Models to compare (using fixed params for fast comparison)
+compare_models:
+  - algo: adaptive_flipped_lasso
+    display: AdaptiveFlippedLasso
+    params:
+      lambda_ridge: 1.0
+      lambda_: 1.0
+      gamma: 0.5
+    cv: false
+
+  - algo: lasso
+    display: Lasso
+    params:
+      alpha: 0.1
+    cv: false
+
+  - algo: adaptive_lasso
+    display: AdaptiveLasso
+    params:
+      alpha: 0.1
+    cv: false
+
+  - algo: group_lasso
+    display: GroupLasso
+    params:
+      alpha: 0.1
+    cv: false
+
+  - algo: unilasso
+    display: UniLasso
+    params:
+      lambda_1: 0.1
+      lambda_2: 0.1
+    cv: false
+
+# Output settings
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark

@@ -5,7 +5,7 @@ AdaptiveFlippedLasso API 层
 import numpy as np
 from sklearn.model_selection import KFold
 from sklearn.utils.validation import check_is_fitted
-from .base import BaseAdaptiveFlippedLasso, AdaptiveFlippedLassoRegressor, AdaptiveFlippedLassoClassifier
+from .base import BaseAdaptiveFlippedLasso, AdaptiveFlippedLassoRegressor, AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV
 
 
 class AdaptiveFlippedLasso(AdaptiveFlippedLassoRegressor):
@@ -55,167 +55,20 @@ class AdaptiveFlippedLassoClassifier(AdaptiveFlippedLassoClassifier):
     pass
 
 
-class AdaptiveFlippedLassoCV:
-    """
-    带交叉验证的 AdaptiveFlippedLasso
-
-    自动搜索最优 lambda_ 参数
-    """
-
-    def __init__(
-        self,
-        lambda_ridge: float = 10.0,
-        lambda_min_ratio: float = 1e-4,
-        n_lambda: int = 50,
-        cv: int = 5,
-        gamma: float = 1.0,
-        alpha_min_ratio: float = 1e-4,
-        n_alpha: int = 50,
-        max_iter: int = 1000,
-        tol: float = 1e-4,
-        standardize: bool = True,
-        fit_intercept: bool = True,
-        random_state: int = 2026,
-        verbose: bool = False,
-    ):
-        self.lambda_ridge = lambda_ridge
-        self.lambda_min_ratio = lambda_min_ratio
-        self.n_lambda = n_lambda
-        self.cv = cv
-        self.gamma = gamma
-        self.alpha_min_ratio = alpha_min_ratio
-        self.n_alpha = n_alpha
-        self.max_iter = max_iter
-        self.tol = tol
-        self.standardize = standardize
-        self.fit_intercept = fit_intercept
-        self.random_state = random_state
-        self.verbose = verbose
-
-    def get_params(self, deep: bool = True) -> dict:
-        return {k: v for k, v in self.__dict__.items() if k.endswith('_') or k in [
-            'lambda_ridge', 'lambda_min_ratio', 'n_lambda', 'cv', 'gamma',
-            'alpha_min_ratio', 'n_alpha', 'max_iter', 'tol', 'standardize',
-            'fit_intercept', 'random_state', 'verbose'
-        ]}
-
-    def set_params(self, **params):
-        for key, value in params.items():
-            setattr(self, key, value)
-        return self
-
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
-        """
-        交叉验证拟合
-        """
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.utils.validation import check_X_y
-
-        X, y = check_X_y(X, y, accept_sparse=['csr', 'csc'], ensure_2d=True)
-        self.n_features_in_ = X.shape[1]
-
-        # 标准化
-        if self.standardize:
-            scaler = StandardScaler()
-            X = scaler.fit_transform(X)
-
-        # 计算 lambda 搜索路径
-        lambda_max = np.max(np.abs(X.T @ y)) / len(y)
-        lambda_min = lambda_max * self.lambda_min_ratio
-        lambdas = np.logspace(np.log10(lambda_min), np.log10(lambda_max), self.n_lambda)[::-1]
-
-        # K-Fold CV
-        kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
-
-        cv_scores = np.zeros(len(lambdas))
-        for fold_idx, (train_idx, test_idx) in enumerate(kfold.split(X)):
-            X_train, X_test = X[train_idx], X[test_idx]
-            y_train, y_test = y[train_idx], y[test_idx]
-
-            if sample_weight is not None:
-                sw_train = sample_weight[train_idx]
-            else:
-                sw_train = None
-
-            fold_scores = []
-            for i, lam in enumerate(lambdas):
-                model = AdaptiveFlippedLasso(
-                    lambda_ridge=self.lambda_ridge,
-                    lambda_=lam,
-                    gamma=self.gamma,
-                    alpha_min_ratio=self.alpha_min_ratio,
-                    n_alpha=self.n_alpha,
-                    max_iter=self.max_iter,
-                    tol=self.tol,
-                    standardize=False,
-                    fit_intercept=self.fit_intercept,
-                    random_state=self.random_state,
-                    verbose=False,
-                )
-                model.fit(X_train, y_train, sw_train)
-                cv_scores[i] += model.score(X_test, y_test)
-
-            if self.verbose:
-                print(f"[CV] Fold {fold_idx + 1}/{self.cv} completed")
-
-        cv_scores /= self.cv
-
-        # 选择最优 lambda
-        best_idx = np.argmax(cv_scores)
-        self.best_lambda_ = lambdas[best_idx]
-        self.cv_scores_ = cv_scores
-
-        if self.verbose:
-            print(f"[CV] Best lambda={self.best_lambda_:.6f}, CV score={cv_scores[best_idx]:.4f}")
-
-        # 用最优 lambda 在全部数据上拟合
-        self.best_model_ = AdaptiveFlippedLasso(
-            lambda_ridge=self.lambda_ridge,
-            lambda_=self.best_lambda_,
-            gamma=self.gamma,
-            alpha_min_ratio=self.alpha_min_ratio,
-            n_alpha=self.n_alpha,
-            max_iter=self.max_iter,
-            tol=self.tol,
-            standardize=False,
-            fit_intercept=self.fit_intercept,
-            random_state=self.random_state,
-            verbose=self.verbose,
-        )
-        self.best_model_.fit(X, y, sample_weight)
-
-        # 复制属性
-        self.coef_ = self.best_model_.coef_
-        self.intercept_ = self.best_model_.intercept_
-        self.scaler_ = scaler if self.standardize else None
-        self.is_fitted_ = True
-
-        return self
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        check_is_fitted(self, 'is_fitted_')
-        return self.best_model_.predict(X)
-
-    def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        from sklearn.metrics import r2_score
-        return r2_score(y, self.predict(X))
-
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        check_is_fitted(self, 'is_fitted_')
-        return self.best_model_.predict_proba(X)
-
-    def get_feature_importance(self) -> np.ndarray:
-        check_is_fitted(self, 'is_fitted_')
-        return np.abs(self.coef_)
+# AdaptiveFlippedLassoCV 继承自 base.py 中新实现的双层网格搜索版本
+# 算法流程：
+# 1. 第一阶段：RidgeCV 自动搜索最优 lambda_ridge
+# 2. 第二阶段：gamma × alpha 双层网格搜索
+#    - 外层：遍历 gamma 候选值
+#    - 内层：LassoCV 自动走完 alpha 路径的交叉验证
 
 
-class AdaptiveFlippedLassoClassifierCV(AdaptiveFlippedLassoCV):
+class AdaptiveFlippedLassoClassifierCV(AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV):
     """
     带交叉验证的 AdaptiveFlippedLasso 分类器（二分类）
     """
 
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
-        from sklearn.preprocessing import StandardScaler
         from sklearn.utils.validation import check_X_y
 
         X, y = check_X_y(X, y, accept_sparse=['csr', 'csc'], ensure_2d=True)
@@ -227,78 +80,18 @@ class AdaptiveFlippedLassoClassifierCV(AdaptiveFlippedLassoCV):
 
         y_continuous = (y == self.classes_[1]).astype(np.float64)
 
-        # 标准化
-        if self.standardize:
-            scaler = StandardScaler()
-            X = scaler.fit_transform(X)
-
-        # 计算 lambda 搜索路径
-        lambda_max = np.max(np.abs(X.T @ y_continuous)) / len(y_continuous)
-        lambda_min = lambda_max * self.lambda_min_ratio
-        lambdas = np.logspace(np.log10(lambda_min), np.log10(lambda_max), self.n_lambda)[::-1]
-
-        # K-Fold CV
-        kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
-
-        cv_scores = np.zeros(len(lambdas))
-        for fold_idx, (train_idx, test_idx) in enumerate(kfold.split(X)):
-            X_train, X_test = X[train_idx], X[test_idx]
-            y_train, y_test = y_continuous[train_idx], y_continuous[test_idx]
-
-            fold_scores = []
-            for i, lam in enumerate(lambdas):
-                model = AdaptiveFlippedLasso(
-                    lambda_ridge=self.lambda_ridge,
-                    lambda_=lam,
-                    gamma=self.gamma,
-                    alpha_min_ratio=self.alpha_min_ratio,
-                    n_alpha=self.n_alpha,
-                    max_iter=self.max_iter,
-                    tol=self.tol,
-                    standardize=False,
-                    fit_intercept=self.fit_intercept,
-                    random_state=self.random_state,
-                    verbose=False,
-                )
-                model.fit(X_train, y_train)
-                cv_scores[i] += model.score(X_test, y_test)
-
-        cv_scores /= self.cv
-
-        best_idx = np.argmax(cv_scores)
-        self.best_lambda_ = lambdas[best_idx]
-        self.cv_scores_ = cv_scores
-
-        # 全量拟合
-        self.best_model_ = AdaptiveFlippedLasso(
-            lambda_ridge=self.lambda_ridge,
-            lambda_=self.best_lambda_,
-            gamma=self.gamma,
-            alpha_min_ratio=self.alpha_min_ratio,
-            n_alpha=self.n_alpha,
-            max_iter=self.max_iter,
-            tol=self.tol,
-            standardize=False,
-            fit_intercept=self.fit_intercept,
-            random_state=self.random_state,
-            verbose=self.verbose,
-        )
-        self.best_model_.fit(X, y_continuous, sample_weight)
-
-        self.coef_ = self.best_model_.coef_
-        self.intercept_ = self.best_model_.intercept_
-        self.scaler_ = scaler if self.standardize else None
-        self.is_fitted_ = True
-
-        return self
+        # 复用父类 fit 逻辑
+        return super().fit(X, y_continuous, sample_weight)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         check_is_fitted(self, 'is_fitted_')
-        return self.best_model_.predict(X)
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         check_is_fitted(self, 'is_fitted_')
-        return self.best_model_.predict_proba(X)
+        z = X @ self.coef_ + self.intercept_
+        proba_1 = 1 / (1 + np.exp(-np.clip(z, -30, 30)))
+        return np.column_stack([1 - proba_1, proba_1])
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         from sklearn.metrics import accuracy_score
