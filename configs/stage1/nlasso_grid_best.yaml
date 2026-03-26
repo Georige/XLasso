@@ -1,0 +1,63 @@
+experiment: nlasso_grid
+generated_by: sweep.py stage1
+generated_at: '2026-03-26T14:21:08.865070'
+base_config: experiments/configs/stage1/nlasso_grid.yaml
+search_space:
+  lambda_:
+  - 0.001
+  - 0.01
+  - 0.1
+  gamma:
+  - 0.1
+  - 0.3
+  - 0.5
+  group_threshold:
+  - 0.5
+  - 0.7
+  - 0.9
+best_structural_region:
+  lambda_:
+  - 0.1
+  - 0.1
+  gamma:
+  - 0.1
+  - 0.5
+  group_threshold:
+  - 0.7
+  - 0.9
+structural_insight:
+- lambda_ is positively correlated with F1 (r=0.984)
+- 'Best lambda_ range: [0.100000, 0.100000]'
+- 'Best gamma range: [0.100000, 0.500000]'
+- 'Best group_threshold range: [0.700000, 0.900000]'
+best_grid_point:
+  lambda_: !!python/object/apply:numpy.core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    mpmZmZmZuT8=
+  gamma: !!python/object/apply:numpy.core.multiarray.scalar
+  - *id001
+  - !!binary |
+    mpmZmZmZuT8=
+  group_threshold: !!python/object/apply:numpy.core.multiarray.scalar
+  - *id001
+  - !!binary |
+    ZmZmZmZm5j8=
+best_metrics:
+  f1: 0.8585858585858585
+  mse: 16.499092771438033
+  tpr: 1.0
+  fdr: 0.24603174603174602

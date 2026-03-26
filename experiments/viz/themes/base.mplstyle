@@ -1,0 +1,43 @@
+#############################################################################
+# Base Matplotlib Style
+# Common settings for all experiment visualizations
+#############################################################################
+
+# Figure
+figure.figsize: 10, 6
+figure.dpi: 100
+figure.autolayout: True
+
+# Axes
+axes.titlesize: 14
+axes.titleweight: bold
+axes.labelsize: 12
+axes.labelweight: normal
+axes.linewidth: 1.0
+axes.grid: True
+axes.grid.axis: both
+axes.spines.top: False
+axes.spines.right: False
+
+# Colors
+axes.prop_cycle: cycler('color', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'])
+
+# Lines
+lines.linewidth: 2.0
+lines.markersize: 6
+
+# Legend
+legend.fontsize: 10
+legend.frameon: False
+legend.loc: best
+
+# Ticks
+xtick.labelsize: 10
+ytick.labelsize: 10
+xtick.direction: out
+ytick.direction: out
+
+# Save
+savefig.bbox: tight
+savefig.pad_inches: 0.05
+savefig.dpi: 150

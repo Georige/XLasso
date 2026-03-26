@@ -1,0 +1,52 @@
+#############################################################################
+# Paper Matplotlib Style
+# Settings optimized for paper/publication figures
+# Use with: plt.style.use('viz/themes/paper.mplstyle')
+#############################################################################
+
+# Inherit from base
+include: themes/base.mplstyle
+
+# Figure - higher resolution for publications
+figure.dpi: 300
+figure.figsize: 7, 5
+
+# Fonts - Times New Roman for papers
+font.family: serif
+font.serif: Times New Roman
+font.size: 11
+font.weight: normal
+
+# Title
+axes.titlesize: 13
+axes.titleweight: bold
+
+# Labels
+axes.labelsize: 11
+axes.labelweight: normal
+
+# Tick labels
+xtick.labelsize: 10
+ytick.labelsize: 10
+
+# Lines - thinner for papers
+lines.linewidth: 1.5
+lines.markersize: 5
+
+# Legend
+legend.fontsize: 9
+legend.frameon: True
+legend.framealpha: 0.9
+legend.edgecolor: gray
+legend.fancybox: False
+
+# Grid - lighter
+axes.grid: True
+axes.grid.alpha: 0.3
+axes.grid.linewidth: 0.5
+
+# Save settings - high quality
+savefig.dpi: 300
+savefig.bbox: tight
+savefig.pad_inches: 0.1
+savefig.format: pdf

@@ -1,0 +1,11 @@
+algo,metric,value,type
+nlasso,f1,0.2880996893030104,algorithm
+nlasso,r2,-2.711222227620138,algorithm
+nlasso,sparsity,0.7552000000000001,algorithm
+nlasso,precision,0.169101416813535,algorithm
+nlasso,recall,1.0,algorithm
+adaptive_lasso,f1,0.619376026272578,algorithm
+adaptive_lasso,r2,0.0507548074970528,algorithm
+adaptive_lasso,sparsity,0.982,algorithm
+adaptive_lasso,precision,1.0,algorithm
+adaptive_lasso,recall,0.45,algorithm

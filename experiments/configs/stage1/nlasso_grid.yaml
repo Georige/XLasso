@@ -1,0 +1,29 @@
+# Stage1 Configuration - Grid Search for NLasso
+# ================================================================
+experiment: nlasso_grid
+description: "Stage 1 grid search for NLasso"
+
+# Algorithm
+algo: nlasso
+
+# Data generation parameters
+n_samples: 100
+n_features: 50
+n_nonzero: 5
+sigma: 1.0
+correlation_type: pairwise
+rho: 0.5
+random_state: 42
+
+# Cross-validation settings
+n_repeats: 1
+cv_folds: 3
+
+# Grid search space (coarse grid)
+search_space:
+  lambda_: [0.001, 0.01, 0.1]
+  gamma: [0.1, 0.3, 0.5]
+  group_threshold: [0.5, 0.7, 0.9]
+
+# Output settings
+output_dir: results/stage1

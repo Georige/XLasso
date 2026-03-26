@@ -88,11 +88,19 @@ $$\hat{\beta}^{\mathrm{ridge}} = \arg\min_{\beta \in \mathbb{R}^p} \frac{1}{2n}\
 
 **两个直接收益。** (1) **噪声列被提前压扁**：$\hat{\beta}^{\mathrm{ridge}}$ 中弱信号或纯噪声坐标接近零，据此构造的 $X_{\mathrm{loo}}$ 列波动更小、“水分”更少，第二阶段 Lasso 在更干净的输入上优化，往往更易收敛、路径更稳。(2) **缓解伪特征搭便车**：共线下边际回归可能把集体波动错记在某几个变量上；Ridge 在全体列上分摊与收缩，再辅以留一构造，可削弱“无关列因相关而虚假放大”的现象。
 
-**无p值时的权重替代。** Ridge 不附带与单变量 $t$ 检验同类的显著性。我们用系数**幅度**做反向映射（幅度越大，越相信该列与 $y$ 在条件意义下相关，第二阶段越愿意沿 Ridge 同向放松正侧惩罚）。令 $M = \max_{1 \le \ell \le p} |\hat{\beta}^{\mathrm{ridge}}_\ell|$，若 $M=0$ 则令 $M$ 为某一正小常数以避免除零。定义基准权重
+**无p值时的权重替代。** Ridge 不附带与单变量 $t$ 检验同类的显著性。我们用系数**幅度**做正向映射（幅度越大，越相信该列与 $y$ 在条件意义下相关，第二阶段越愿意保留该特征）。
 
-$$w_j = \frac{1}{2}\exp\left(-\gamma \cdot \frac{|\hat{\beta}^{\mathrm{ridge}}_j|}{M}\right), \qquad \gamma > 0.$$
+令 $M = \max_{1 \le \ell \le p} |\hat{\beta}^{\mathrm{ridge}}_\ell|$，若 $M=0$ 则令 $M$ 为某一正小常数以避免除零。
 
-$|\hat{\beta}^{\mathrm{ridge}}_j|/M \in [0,1]$，故 $w_j \in [\frac{1}{2}e^{-\gamma}, \frac{1}{2}]$：Ridge 越强的坐标 $w_j$ 越小，与第 3.3 节中 $w_j^+ = w_j$、$w_j^- = 1-w_j$ 配合时，正系数一侧惩罚更轻。$\gamma$ 控制映射陡峭程度（默认可在交叉验证中与 $\lambda_{\mathrm{ridge}}$ 一并调节）。
+**步骤1：计算原始权重（Raw Weights）**
+$$w_j^{\text{raw}} = \frac{1}{(|\hat{\beta}_{\text{ridge}, j}| + \epsilon)^\gamma}, \qquad \gamma > 0, \quad \epsilon > 0$$
+
+其中 $\gamma$ 控制映射陡峭程度，$\epsilon$ 为防止除零的小常数。原始权重 $w_j^{\text{raw}} \in (0, 1]$：Ridge 越弱的坐标（$|\hat{\beta}^{\mathrm{ridge}}_j| \to 0$）$w_j^{\text{raw}}$ 越小，Ridge 越强的坐标（$|\hat{\beta}^{\mathrm{ridge}}_j| \to M$）$w_j^{\text{raw}}$ 越大。
+
+**步骤2：均值归一化（Mean Normalization）**
+$$w_j^{\text{norm}} = \frac{w_j^{\text{raw}}}{\frac{1}{p} \sum_{k=1}^p w_k^{\text{raw}}}$$
+
+归一化后所有权重均值为1，便于解释和使用。结合第 3.3 节中 $w_j^+ = s \cdot w_j^{\text{norm}}$、$w_j^- = s \cdot (1 - w_j^{\text{norm}})$ 的设计，$w_j^{\text{norm}}$ 越大的坐标（Ridge 越强）$w_j^+$ 越大、$w_j^-$ 越小，正系数一侧惩罚越重（倾向保留），负系数一侧惩罚越轻；$w_j^{\text{norm}}$ 越小的坐标（Ridge 越弱）$w_j^+$ 越小、$w_j^-$ 越大，正系数一侧惩罚越轻、负系数一侧惩罚越重（倾向压零）。
 
 **$X_{\mathrm{loo}}$。** 与 UniLasso 用留一桥接两阶段的思路一致，第二阶段不直接在原始 $X$ 上重复全样本拟合，而用留一方式削弱过拟合：对每个样本 $i$，在 $\{(X_{-i}, y_{-i})\}$ 上（或等价公式）得到 Ridge 预测下第 $j$ 列对第 $i$ 行的贡献，填满 $X_{\mathrm{loo}}$。具体计算与 GLM 情形下的 IRLS+Ridge 留一实现见第 4 节说明。
 
@@ -118,25 +126,27 @@ $$\min_{\theta \in \mathbb{R}^p} \;\; \underbrace{\frac{1}{2n}\,\bigl\|y - X_{\m
 
 $$P_{\text{asym}}(\theta) = \sum_{j=1}^p \left( w_j^+ \max(\theta_j, 0) + w_j^- \max(-\theta_j, 0) \right)$$
 
-其中基准权重由第 3.2 节给出的 Ridge 幅度映射确定：
+其中基准权重由第 3.2 节给出的 Ridge 幅度映射（均值归一化幂律）确定：
 
-$$w_j = \frac{1}{2}\exp\left(-\gamma \cdot \frac{|\hat{\beta}^{\mathrm{ridge}}_j|}{M}\right), \qquad M = \max_\ell |\hat{\beta}^{\mathrm{ridge}}_\ell| \vee \varepsilon_0,$$
+$$w_j^{\text{raw}} = \frac{1}{(|\hat{\beta}_{\text{ridge}, j}| + \epsilon)^\gamma}, \qquad \epsilon > 0,$$
 
-$$w_j^+ = w_j, \quad w_j^- = 1 - w_j.$$
+$$w_j^{\text{norm}} = \frac{w_j^{\text{raw}}}{\frac{1}{p} \sum_{k=1}^p w_k^{\text{raw}}}},$$
+
+$$w_j^+ = s \cdot w_j^{\text{norm}}, \quad w_j^- = s \cdot (1 - w_j^{\text{norm}}).$$
 
 式中 $\gamma > 0$ 控制“强 Ridge 坐标更受优待”的强度，$\varepsilon_0$ 为防止 $M=0$ 的小常数。
 
 #### 3.3.3 权重设计说明
 
-1. **幅度自适应**：$|\hat{\beta}^{\mathrm{ridge}}_j|$ 相对全列最大幅度越大，$w_j$ 越小，$w_j^+$ 越小，正侧 $\theta_j$ 惩罚越轻，倾向于与 Ridge 同向的正系数；幅度接近零的坐标 $w_j \approx \frac{1}{2}$，正负两侧惩罚接近对称，便于 Lasso 将其压零。
-2. **$\gamma$ 的作用**：$\gamma$ 越大，强弱点分化的指数曲线越陡；$\gamma$ 越小，$w_j$ 都靠近 $\frac{1}{2}$，非对称性减弱，接近普通对称 Lasso 在 $X_{\mathrm{loo}}$ 上的行为。
-3. **与旧版 p 值权重的对照**：原先 $w_j \propto p_j^k$ 依赖边际显著性；现改为 $\exp(-\gamma|\beta_j|/M)$，直接对齐**全模型 Ridge 的条件强度**，在共线设置下通常更稳健。若令 $\gamma \to 0$，则 $w_j \to \frac{1}{2}$，非对称惩罚退化为对称形式。
+1. **幅度自适应**：$|\hat{\beta}^{\mathrm{ridge}}_j|$ 相对全列最大幅度越大，$w_j^{\text{raw}}$ 越大，归一化后 $w_j^{\text{norm}}$ 越大，$w_j^+$ 越大、$w_j^-$ 越小，正侧 $\theta_j$ 惩罚越重（倾向于保留与 Ridge 同向的正系数）；幅度接近零的坐标 $w_j^{\text{raw}} \approx \epsilon^\gamma$，$w_j^{\text{norm}}$ 接近 0，$w_j^+$ 接近 0、$w_j^-$ 接近 $s$，正负两侧惩罚接近全压零，便于 Lasso 将其压零。
+2. **$\gamma$ 的作用**：$\gamma$ 越大，幂律曲线越陡（强弱点分化越剧烈）；$\gamma$ 越小，$w_j^{\text{raw}}$ 都接近 1，$w_j^{\text{norm}}$ 都接近 1，非对称性减弱，接近普通对称 Lasso 在 $X_{\mathrm{loo}}$ 上的行为。
+3. **与旧版 p 值权重的对照**：原先 $w_j \propto p_j^k$ 依赖边际显著性；现改为 $(|\beta_j|/M + \epsilon)^\gamma$ 的均值归一化形式，直接对齐**全模型 Ridge 的条件强度**，在共线设置下通常更稳健。若令 $\gamma \to 0$，则 $w_j^{\text{raw}} \to 1$，归一化后 $w_j^{\text{norm}} \to 1$，$w_j^+ = w_j^- = s/2$，非对称惩罚退化为对称形式。
 
 #### 3.3.4 全局惩罚缩放机制
 
-为了方便调节整体惩罚强度，引入全局缩放参数 $s > 0$（默认值 $s = 1.0$）：
+为了方便调节整体惩罚强度，引入全局缩放参数 $s > 0$（默认值 $s = 1.0$），作用于归一化后的权重：
 
-$$w_j^+ = s \cdot w_j, \quad w_j^- = s \cdot (1 - w_j)$$
+$$w_j^+ = s \cdot w_j^{\text{norm}}, \quad w_j^- = s \cdot (1 - w_j^{\text{norm}})$$
 
 通过调整 $s$ 可以整体放大或缩小惩罚强度，无需修改lambda路径，提高了调参效率。
 
@@ -320,7 +330,7 @@ NLasso支持多种广义线性模型损失函数：
 
 *第一阶段：全模型强 Ridge-GLM 与权重*
 
-1. 在 $(X,y)$ 上拟合强 $\ell_2$ 惩罚的泊松回归（Ridge-GLM），得 $\hat{\beta}^{\mathrm{ridge}}$；令 $M = \max_\ell |\hat{\beta}^{\mathrm{ridge}}_\ell| \vee \varepsilon_0$，计算 $w_j = \frac{1}{2}\exp(-\gamma |\hat{\beta}^{\mathrm{ridge}}_j|/M)$
+1. 在 $(X,y)$ 上拟合强 $\ell_2$ 惩罚的泊松回归（Ridge-GLM），得 $\hat{\beta}^{\mathrm{ridge}}$；令 $M = \max_\ell |\hat{\beta}^{\mathrm{ridge}}_\ell| \vee \varepsilon_0$，计算 $w_j^{\text{raw}} = 1/(|\hat{\beta}^{\mathrm{ridge}}_j|/M + \epsilon)^\gamma$，$w_j^{\text{norm}} = w_j^{\text{raw}} / (\frac{1}{p} \sum_k w_k^{\text{raw}})$
 2. 对每个 $i$，在去掉样本 $i$ 的数据上重拟合（或等价留一公式）Ridge-GLM，构造 $X_{\mathrm{loo}}$，使 $X_{\mathrm{loo},ij}$ 为第 $j$ 列在第 $i$ 行上的留一自然参数分量 $\hat{\eta}_{j(-i)}$
 
 *第二阶段：变量分组*
@@ -669,7 +679,7 @@ $$\min_{\theta} \underbrace{\sum_{i=1}^n \bigl[y_i (X_{\mathrm{loo},i}^{\top} \t
 ### 主要贡献
 
 1. **非对称软惩罚**：用灵活的非对称惩罚替代UniLasso的刚性非负硬约束，在保持符号偏好的同时保留灵活性。
-2. **Ridge 条件效应与幅度加权**：第一阶段用强 $\ell_2$ 正则在全模型上估计收缩系数，据此构造 $X_{\mathrm{loo}}$ 与权重 $w_j \propto \exp(-\gamma|\hat{\beta}^{\mathrm{ridge}}_j|/M)$，替代边际 p 值，减轻共线下的伪信号与搭便车。
+2. **Ridge 条件效应与幅度加权**：第一阶段用强 $\ell_2$ 正则在全模型上估计收缩系数，据此构造 $X_{\mathrm{loo}}$ 与权重 $w_j^{\text{raw}} = 1/(|\hat{\beta}^{\mathrm{ridge}}_j|/M + \epsilon)^\gamma$ 的均值归一化形式，替代边际 p 值，减轻共线下的伪信号与搭便车。
 3. **组结构建模**：通过正交分解处理高相关变量组，有效解决孪生变量反符号等挑战性场景。
 4. **多功能扩展**：支持多种GLM损失函数，并通过B样条和浅树方法实现非线性扩展。
 

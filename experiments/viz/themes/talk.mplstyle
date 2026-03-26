@@ -1,0 +1,52 @@
+#############################################################################
+# Talk Matplotlib Style
+# Settings optimized for presentation slides/talks
+# Use with: plt.style.use('viz/themes/talk.mplstyle')
+#############################################################################
+
+# Inherit from base
+include: themes/base.mplstyle
+
+# Figure - larger for screens
+figure.dpi: 150
+figure.figsize: 12, 8
+
+# Fonts - sans-serif for readability
+font.family: sans-serif
+font.sans-serif: Arial
+font.size: 14
+font.weight: normal
+
+# Title - larger for projection
+axes.titlesize: 18
+axes.titleweight: bold
+
+# Labels - larger for projection
+axes.labelsize: 14
+axes.labelweight: normal
+
+# Tick labels
+xtick.labelsize: 12
+ytick.labelsize: 12
+
+# Lines - thicker for projection
+lines.linewidth: 3.0
+lines.markersize: 8
+
+# Legend
+legend.fontsize: 12
+legend.frameon: True
+legend.framealpha: 0.9
+
+# Grid - more visible
+axes.grid: True
+axes.grid.alpha: 0.5
+axes.grid.linewidth: 1.0
+
+# Colors - more saturated for talks
+axes.prop_cycle: cycler('color', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#7f7f7f', '#bcbd22'])
+
+# Save
+savefig.dpi: 150
+savefig.bbox: tight
+savefig.pad_inches: 0.1

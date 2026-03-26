@@ -1,0 +1,13 @@
+*.egg-info
+*.pyc
+
+/doc/_build/
+/doc/gen_modules/
+/doc/generated/
+/doc/auto_examples/
+/doc/sg_execution_times.rst
+
+__pycache__
+__cache__
+*_cache
+**/.DS_Store

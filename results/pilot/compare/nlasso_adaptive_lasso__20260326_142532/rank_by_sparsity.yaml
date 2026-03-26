@@ -1,0 +1,8 @@
+rank_1:
+  algo: adaptive_lasso
+  type: algorithm
+  value: 0.982
+rank_2:
+  algo: nlasso
+  type: algorithm
+  value: 0.7552000000000001
