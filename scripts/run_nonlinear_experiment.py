@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from experiments.nonlinear_experiment import run_all_nonlinear_experiments, compare_nonlinear_models
+from unilasso_experiments.nonlinear_experiment import run_all_nonlinear_experiments, compare_nonlinear_models
 
 
 def main():

@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from experiments.linear_experiment import run_all_linear_scenarios
+from unilasso_experiments.linear_experiment import run_all_linear_scenarios
 
 
 def main():

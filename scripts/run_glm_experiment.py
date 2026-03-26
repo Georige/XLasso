@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from experiments.glm_experiment import run_all_glm_experiments
+from unilasso_experiments.glm_experiment import run_all_glm_experiments
 
 
 def main():
