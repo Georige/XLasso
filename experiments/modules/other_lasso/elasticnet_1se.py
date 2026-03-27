@@ -108,12 +108,29 @@ class ElasticNet1SE:
         # 5. 计算 1-SE 阈值上限 (误差越小越好，所以容忍度是加上 1 个 SE)
         threshold_1se = best_mse + best_se
 
-        # 6. 找出及格的 alpha，并选出其中最大的（惩罚最强的，最稀疏的）
+        # 6. 找出及格的 alpha，并选出非零系数最少的
         candidates_mask = mse_for_best_l1 <= threshold_1se
-        valid_alphas = alphas_for_best_l1[candidates_mask]
+        candidate_indices = np.where(candidates_mask)[0]
 
-        # 选出最保守、最稀疏的 alpha
-        alpha_1se = np.max(valid_alphas)
+        if len(candidate_indices) > 0:
+            # 对每个候选 alpha 实际 fit 一次，数非零系数，选最稀疏的
+            n_nonzero_list = []
+            for idx in candidate_indices:
+                alpha = alphas_for_best_l1[idx]
+                model_tmp = ElasticNet(
+                    alpha=alpha,
+                    l1_ratio=best_l1_ratio,
+                    max_iter=self.max_iter,
+                    random_state=self.random_state
+                )
+                model_tmp.fit(X, y)
+                n_nonzero = np.sum(model_tmp.coef_ != 0)
+                n_nonzero_list.append(n_nonzero)
+
+            best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
+            alpha_1se = alphas_for_best_l1[best_candidate_idx]
+        else:
+            alpha_1se = alphas_for_best_l1[best_alpha_idx]
 
         if self.verbose:
             print(f"全局最小 MSE 对应的 alpha: {enet_cv.alphas_[best_l1_idx, best_alpha_idx]:.6f}")

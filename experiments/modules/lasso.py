@@ -141,8 +141,8 @@ class LassoCV(BaseSparseSelector):
         Random state for reproducibility.
     use_1se : bool, default=True
         If True, use 1-SE rule to select the most regularized model
-        within 1 standard error of the best score (via sklearn's
-        selection='random' mechanism).
+        within 1 standard error of the best score. The 1-SE rule selects
+        the largest alpha whose CV MSE is within 1-SE of the minimum MSE.
     """
 
     def __init__(
@@ -208,8 +208,7 @@ class LassoCV(BaseSparseSelector):
         y_centered = y - np.mean(y)
 
         # Fit sklearn LassoCV
-        # sklearn's selection='random' implements 1-SE rule (selects
-        # the most regularized model within 1-SE of best score)
+        # We will manually apply 1-SE rule after fitting using mse_path_
         self._model = SklearnLassoCV(
             alphas=self.alphas,
             cv=self.cv,
@@ -217,16 +216,70 @@ class LassoCV(BaseSparseSelector):
             max_iter=self.max_iter,
             tol=self.tol,
             random_state=self.random_state,
-            selection='random' if self.use_1se else 'alpha',
+            selection='random',  # Random selection is more efficient for many features
         )
         self._model.fit(X_scaled, y_centered, sample_weight=sample_weight)
 
-        # Extract best alpha
-        self.best_alpha_ = float(self._model.alpha_)
+        # Apply 1-SE rule manually if requested
+        if self.use_1se and hasattr(self._model, 'mse_path_') and self._model.mse_path_ is not None:
+            # mse_path_ shape: (n_alphas, n_folds)
+            mse_path = self._model.mse_path_
+            mean_mse = mse_path.mean(axis=-1)
+            std_mse = mse_path.std(axis=-1)
+            se_mse = std_mse / np.sqrt(self.cv)
+
+            # Find min MSE and its SE
+            min_mse_idx = np.argmin(mean_mse)
+            min_mse = mean_mse[min_mse_idx]
+            min_se = se_mse[min_mse_idx]
+
+            # Threshold = min_mse + 1*SE (MSE越小越好，所以是加)
+            threshold = min_mse + min_se
+
+            # Find all alphas where MSE <= threshold (within 1-SE of best)
+            candidates_mask = mean_mse <= threshold
+            candidate_indices = np.where(candidates_mask)[0]
+            candidate_alphas = self._model.alphas_[candidates_mask]
+
+            if len(candidate_indices) > 0:
+                # For each valid alpha, fit and count non-zero coefficients
+                # Select the one with FEWEST non-zeros (most sparse)
+                n_nonzero_list = []
+                for idx in candidate_indices:
+                    alpha = self._model.alphas_[idx]
+                    model_tmp = SklearnLasso(
+                        alpha=alpha,
+                        fit_intercept=False,
+                        max_iter=self.max_iter,
+                        tol=self.tol,
+                    )
+                    model_tmp.fit(X_scaled, y_centered, sample_weight=sample_weight)
+                    n_nonzero = np.sum(model_tmp.coef_ != 0)
+                    n_nonzero_list.append(n_nonzero)
+
+                # Pick the alpha with minimum non-zeros
+                best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
+                best_alpha = float(self._model.alphas_[best_candidate_idx])
+            else:
+                best_alpha = float(self._model.alphas_[min_mse_idx])
+        else:
+            # Use standard min-MSE alpha
+            best_alpha = float(self._model.alpha_)
+
+        self.best_alpha_ = best_alpha
+
+        # Refit with the selected alpha using sklearn Lasso
+        final_model = SklearnLasso(
+            alpha=self.best_alpha_,
+            fit_intercept=False,
+            max_iter=self.max_iter,
+            tol=self.tol,
+        )
+        final_model.fit(X_scaled, y_centered, sample_weight=sample_weight)
 
         # Extract and scale coefficients
-        self.coef_ = self._model.coef_ / self._X_std
-        self.intercept_ = float(np.mean(y) - np.sum(self._model.coef_ * self._X_mean / self._X_std))
+        self.coef_ = final_model.coef_ / self._X_std
+        self.intercept_ = float(np.mean(y) - np.sum(final_model.coef_ * self._X_mean / self._X_std))
 
         # Store CV results
         self.cv_results_ = {

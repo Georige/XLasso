@@ -100,9 +100,28 @@ class RelaxedLassoCV1SE(BaseEstimator, RegressorMixin):
         # 阈值：容忍更大的误差 (加上 1 个 SE)
         threshold_1se = best_mse + best_se
 
-        # 找出及格的 alpha 并选最大的 (惩罚最狠的)
+        # 找出及格的 alpha，并选出非零系数最少的
         candidates_mask = mean_mse <= threshold_1se
-        alpha_1se = np.max(lasso_cv.alphas_[candidates_mask])
+        candidate_indices = np.where(candidates_mask)[0]
+
+        if len(candidate_indices) > 0:
+            # 对每个候选 alpha 实际 fit 一次，数非零系数，选最稀疏的
+            n_nonzero_list = []
+            for idx in candidate_indices:
+                alpha = lasso_cv.alphas_[idx]
+                model_tmp = Lasso(
+                    alpha=alpha,
+                    max_iter=5000,
+                    random_state=self.random_state
+                )
+                model_tmp.fit(X, y)
+                n_nonzero = np.sum(model_tmp.coef_ != 0)
+                n_nonzero_list.append(n_nonzero)
+
+            best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
+            alpha_1se = lasso_cv.alphas_[best_candidate_idx]
+        else:
+            alpha_1se = lasso_cv.alphas_[best_idx]
         self.alpha_1se_ = alpha_1se
 
         if self.verbose:

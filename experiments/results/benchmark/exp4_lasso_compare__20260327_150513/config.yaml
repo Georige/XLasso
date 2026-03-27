@@ -1,0 +1,71 @@
+experiment: exp4_lasso_compare
+description: 'Exp4: Opposite-sign twin variables, compare multiple CV algorithms with
+  1-SE rule'
+algo: adaptive_flipped_lasso
+n_samples: 300
+n_features: 1000
+n_nonzero: 20
+correlation_type: experiment4
+rho: 0.85
+random_state: 42
+n_repeats: 5
+cv_folds: 1
+search_space:
+  sigma:
+  - 0.1
+  - 0.5
+  - 1.0
+  - 1.5
+  - 2.0
+  - 3.0
+compare_models:
+- algo: aflclassifier_cv
+  display: AFL-CV-1SE
+  params:
+    lambda_ridge_list:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 5.0
+    - 10.0
+    gamma_list:
+    - 0.3
+    - 0.5
+    - 0.7
+    - 1.0
+    cv: 10
+    n_alpha: 30
+  cv: true
+- algo: lasso_cv
+  display: Lasso-CV
+  params: {}
+  cv: true
+- algo: adaptive_lasso_cv
+  display: AdaptiveLasso-CV
+  params: {}
+  cv: true
+- algo: elasticnet_1se
+  display: ElasticNet-1SE
+  params: {}
+  cv: true
+- algo: relaxed_lasso_1se
+  display: RelaxedLasso-1SE
+  params: {}
+  cv: true
+- algo: unilasso_cv
+  display: UniLasso-CV
+  params: {}
+  cv: true
+lambda_ridge: 10.0
+lambda_: 1.0
+gamma: 0.5
+alpha_min_ratio: 0.0001
+n_alpha: 50
+max_iter: 2000
+tol: 0.0001
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark
+sigma: 1.0
+lambda_1: 0.01
+lambda_2: 0.01
+group_threshold: 0.7
+config_path: experiments/configs/benchmark/exp4_lasso_compare.yaml
