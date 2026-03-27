@@ -7,11 +7,24 @@ from abc import ABC, abstractmethod
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import Lasso, Ridge, RidgeCV, lasso_path
+from sklearn.linear_model import Lasso, Ridge, RidgeCV, lasso_path, LinearRegression
 
 # 性能优化常量
 _COPY_WHEN_POSSIBLE = False
 _DTYPE = np.float64
+
+
+def _detect_collinearity_mode(X):
+    """
+    Detect data collinearity structure via SVD spectral decay.
+    Returns 'dense_collinear' or 'sparse_independent'.
+    """
+    _, s, _ = np.linalg.svd(X, full_matrices=False)
+    energy_ratio = s[0] / np.sum(s)
+    if energy_ratio > 0.40:
+        return "dense_collinear", energy_ratio
+    else:
+        return "sparse_independent", energy_ratio
 
 
 class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
@@ -110,11 +123,12 @@ class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
         signs = np.sign(beta_ridge)
         signs[signs == 0] = 1.0  # 处理零值
 
-        # 计算归一化权重（不裁剪，允许噪声特征的大权重无界增长）
+        # Min-Anchored Normalization - anchors strongest signal at 1.0
         eps = 1e-5
         raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** self.gamma
-        weights = raw_weights / np.mean(raw_weights)
-        # 注意：不再裁剪到 [0,1]，因为噪声权重大于1是算法的关键
+        min_w = np.min(raw_weights)
+        w_normalized = raw_weights / min_w
+        weights = np.clip(w_normalized, 1.0, 100.0)
 
         # 翻转特征方向
         X_flipped = X * signs
@@ -339,6 +353,8 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         fit_intercept: bool = True,
         random_state: int = 2026,
         verbose: bool = False,
+        use_post_ols_debiasing: bool = False,  # Post-selection OLS debiasing
+        auto_tune_collinearity: bool = True,  # Auto-detect collinearity and adjust gamma_list
     ):
         self.lambda_ridge_list = lambda_ridge_list
         self.gamma_list = gamma_list
@@ -351,6 +367,8 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.fit_intercept = fit_intercept
         self.random_state = random_state
         self.verbose = verbose
+        self.use_post_ols_debiasing = use_post_ols_debiasing
+        self.auto_tune_collinearity = auto_tune_collinearity
 
         self._init_fitted_attributes()
 
@@ -367,6 +385,8 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
             'fit_intercept': self.fit_intercept,
             'random_state': self.random_state,
             'verbose': self.verbose,
+            'use_post_ols_debiasing': self.use_post_ols_debiasing,
+            'auto_tune_collinearity': self.auto_tune_collinearity,
         }
         return params
 
@@ -395,6 +415,19 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
             ensure_min_features=2
         )
         self.n_features_in_ = X.shape[1]
+
+        # Auto-detect collinearity mode if enabled
+        if self.auto_tune_collinearity:
+            data_mode, energy_ratio = _detect_collinearity_mode(X)
+            if self.verbose:
+                print(f"[ADL] Detected mode: {data_mode} (energy_ratio={energy_ratio:.3f})")
+
+            if data_mode == "dense_collinear":
+                # For Tecator-like data: use higher gamma, lower ridge
+                self.gamma_list = (1.0, 2.0, 3.0)
+            else:
+                # For Riboflavin-like data: use lower gamma, higher ridge
+                self.gamma_list = (0.3, 0.5, 1.0)
 
         if sample_weight is not None:
             sample_weight = np.asarray(sample_weight, dtype=_DTYPE)
@@ -445,9 +478,11 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
             # 对每个 gamma 分别计算其专属的 alpha 搜索路径
             # （不同 gamma 下 X_adaptive 尺度不同，alpha_max 差异可达数个数量级）
             for gamma_idx, gamma in enumerate(self.gamma_list):
-                # 计算该 gamma 对应的权重
+                # Min-Anchored Normalization
                 raw_weights = 1.0 / (np.abs(beta_ridge_fold) + eps) ** gamma
-                weights = raw_weights / np.mean(raw_weights)
+                min_w = np.min(raw_weights)
+                w_normalized = raw_weights / min_w
+                weights = np.clip(w_normalized, 1.0, 100.0)
 
                 # 空间重构：分别扭曲训练折和验证折
                 X_adaptive_tr = (X_tr * signs_fold) / weights
@@ -486,7 +521,9 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
 
         # 1-SE 法则：选择最稀疏的模型，其 MSE 在 min(MSE) + 1*SE 范围内
         min_mse = np.min(mean_error)
-        threshold = min_mse + std_error
+        min_mse_idx = np.unravel_index(np.argmin(mean_error), mean_error.shape)
+        min_std = std_error[min_mse_idx]
+        threshold = min_mse + min_std
 
         # 找到所有 MSE <= threshold 的候选组合
         candidates_mask = mean_error <= threshold
@@ -504,6 +541,17 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
             best_flat_idx = np.argmin(masked_nselected)
             best_gamma_idx, best_alpha_idx = np.unravel_index(best_flat_idx, mean_error.shape)
 
+        # For high-dimensional data (p >> n), prefer min MSE over sparse 1-SE
+        # This prevents the algorithm from selecting empty models due to unstable ridge coefficients
+        n_samples = X.shape[0]
+        n_features = X.shape[1]
+        if n_features > n_samples * 2:
+            if self.verbose:
+                print("[Stage 2] High-dimensional data detected, using min MSE instead of 1-SE")
+            best_gamma_idx, best_alpha_idx = np.unravel_index(
+                np.argmin(mean_error), mean_error.shape
+            )
+
         self.best_gamma_ = self.gamma_list[best_gamma_idx]
 
         # 重建该 gamma 对应的 alpha 路径（用于取 best_alpha）
@@ -519,7 +567,8 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         signs_tmp = np.sign(beta_ridge_tmp)
         signs_tmp[signs_tmp == 0] = 1.0
         raw_weights_tmp = 1.0 / (np.abs(beta_ridge_tmp) + eps) ** self.best_gamma_
-        weights_tmp = raw_weights_tmp / np.mean(raw_weights_tmp)
+        min_w = np.min(raw_weights_tmp)
+        weights_tmp = np.clip(raw_weights_tmp / min_w, 1.0, 100.0)
         X_adaptive_tmp = (X_for_stage2 * signs_tmp) / weights_tmp
         alpha_max_tmp = np.max(np.abs(X_adaptive_tmp.T @ y)) / len(y)
         alpha_min_tmp = alpha_max_tmp * self.alpha_min_ratio
@@ -555,7 +604,8 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.signs_ = signs_final
 
         raw_weights_final = 1.0 / (np.abs(self.beta_ridge_) + eps) ** self.best_gamma_
-        self.weights_ = raw_weights_final / np.mean(raw_weights_final)
+        min_w = np.min(raw_weights_final)
+        self.weights_ = np.clip(raw_weights_final / min_w, 1.0, 100.0)
 
         X_adaptive_final = (X_for_cv * signs_final) / self.weights_
 
@@ -571,6 +621,30 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
 
         coef_final = (lasso_final.coef_ / self.weights_) * signs_final
 
+        # Post-selection OLS debiasing: fit OLS on selected features to reduce MSE
+        intercept_ols = None
+        if self.use_post_ols_debiasing:
+            selected_mask = lasso_final.coef_ != 0
+            n_selected = np.sum(selected_mask)
+
+            if n_selected > 0 and n_selected < X.shape[1]:
+                # Fit OLS on selected features only (un-penalized)
+                X_selected = X_for_cv[:, selected_mask]
+                ols = LinearRegression(fit_intercept=self.fit_intercept)
+                ols.fit(X_selected, y)
+                # Create full coef vector with OLS coefficients at selected indices
+                coef_debiased = np.zeros(X.shape[1])
+                coef_debiased[selected_mask] = ols.coef_
+                coef_final = coef_debiased
+                if self.fit_intercept:
+                    intercept_ols = ols.intercept_
+            else:
+                if self.fit_intercept:
+                    intercept_ols = lasso_final.intercept_
+        else:
+            if self.fit_intercept:
+                intercept_ols = lasso_final.intercept_
+
         # 逆标准化到原始空间
         if self.standardize:
             self.coef_ = coef_final / self.scaler_.scale_
@@ -579,7 +653,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         else:
             self.coef_ = coef_final
             if self.fit_intercept:
-                self.intercept_ = lasso_final.intercept_
+                self.intercept_ = intercept_ols if intercept_ols is not None else lasso_final.intercept_
 
         self.is_fitted_ = True
         return self
@@ -742,9 +816,10 @@ class AdaptiveFlippedLassoEBIC(BaseAdaptiveFlippedLasso, RegressorMixin):
                 signs = np.sign(beta_ridge)
                 signs[signs == 0] = 1.0
 
-                # 计算权重
+                # Min-Anchored Normalization
                 raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** gamma
-                weights = raw_weights / np.mean(raw_weights)
+                min_w = np.min(raw_weights)
+                weights = np.clip(raw_weights / min_w, 1.0, 100.0)
 
                 # 空间重构
                 X_adaptive = (X * signs) / weights
@@ -825,7 +900,8 @@ class AdaptiveFlippedLassoEBIC(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.signs_ = signs_final
 
         raw_weights_final = 1.0 / (np.abs(self.beta_ridge_) + eps) ** self.best_gamma_
-        self.weights_ = raw_weights_final / np.mean(raw_weights_final)
+        min_w = np.min(raw_weights_final)
+        self.weights_ = np.clip(raw_weights_final / min_w, 1.0, 100.0)
 
         X_adaptive_final = (X * signs_final) / self.weights_
 

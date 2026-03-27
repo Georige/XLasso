@@ -193,6 +193,8 @@ class DataGenerator:
             return self._generate_block(n_samples, n_features, n_nonzero, sigma, family, rho, block_size, n_blocks)
         elif correlation_type == "experiment4":
             return self._generate_experiment4(n_samples, n_features, sigma, family, rho)
+        elif correlation_type == "experiment5":
+            return self._generate_experiment5(n_samples, n_features, sigma, rho)
         else:
             raise ValueError(f"Unknown correlation_type: {correlation_type}")
 
@@ -281,6 +283,47 @@ class DataGenerator:
         else:
             z = X @ beta_true + self.rng.randn(n) * sigma
             y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_experiment5(self, n, p, sigma, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 5 data: Perfect Masking (Absolute Invisible Trap).
+
+        n=300, p=1000, 10 pairs twin variables with ρ=0.8
+        β_{2t-1}=2.0, β_{2t}=-2.5, remaining 980 variables are independent noise
+        Core challenge: Design X such that marginal correlation of true signals → 0
+        """
+        X = self.rng.randn(n, p)
+        beta_true = np.zeros(p)
+
+        # Generate 10 pairs of twin variables (same structure as exp4)
+        for i in range(10):
+            common = self.rng.randn(n)
+            X[:, 2*i] = common * np.sqrt(rho) + self.rng.randn(n) * np.sqrt(1-rho)
+            X[:, 2*i+1] = -common * np.sqrt(rho) + self.rng.randn(n) * np.sqrt(1-rho)
+            beta_true[2*i] = 2.0
+            beta_true[2*i+1] = -2.5
+
+        # Perfect masking: rotate twin variables to have zero marginal correlation with y
+        y_base = X @ beta_true + self.rng.randn(n) * sigma
+
+        for i in range(10):
+            v1 = X[:, 2*i].copy()
+            v2 = X[:, 2*i+1].copy()
+
+            # Make v1 orthogonal to y_base (marginal correlation → 0)
+            proj_y = np.dot(v1, y_base) / (np.dot(y_base, y_base) + 1e-10)
+            v1_ortho = v1 - proj_y * y_base
+            v1_ortho = v1_ortho / (np.linalg.norm(v1_ortho) + 1e-10)
+
+            # Same for v2
+            proj_y2 = np.dot(v2, y_base) / (np.dot(y_base, y_base) + 1e-10)
+            v2_ortho = v2 - proj_y2 * y_base
+            v2_ortho = v2_ortho / (np.linalg.norm(v2_ortho) + 1e-10)
+
+            X[:, 2*i] = v1_ortho * np.std(X[:, 2*i]) + np.mean(X[:, 2*i])
+            X[:, 2*i+1] = v2_ortho * np.std(X[:, 2*i+1]) + np.mean(X[:, 2*i+1])
+
+        y = X @ beta_true + self.rng.randn(n) * sigma
         return X, y, beta_true
 
 

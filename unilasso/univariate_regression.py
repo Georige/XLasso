@@ -52,7 +52,9 @@ def compute_loo_coef_numba(X: np.ndarray, y: np.ndarray) -> Dict[str, np.ndarray
     
     Ri = np.empty((n, p))
     for i in prange(p):
-        Ri[:, i] = n * (centered_y - Xs[:, i] * beta[i]) / (n - 1 - Xs[:, i]**2)
+        denominator = n - 1 - Xs[:, i]**2
+        denominator = np.maximum(denominator, 1e-10)  # Prevent zero or negative
+        Ri[:, i] = n * (centered_y - Xs[:, i] * beta[i]) / denominator
     
     fit = y[:, np.newaxis] - Ri
 

@@ -1,0 +1,76 @@
+by_f1:
+  rank_1:
+    model: LassoCV_1SE
+    f1: 0.0016
+  rank_2:
+    model: UniLassoCV_1SE
+    f1: 0.0015
+  rank_3:
+    model: AdaptiveLassoCV_1SE
+    f1: 0.0
+  rank_4:
+    model: AFLCV_1SE
+    f1: 0.0
+  rank_5:
+    model: ElasticNetCV_1SE
+    f1: 0.0
+  rank_6:
+    model: RelaxedLassoCV_1SE
+    f1: 0.0
+by_mse:
+  rank_1:
+    model: AdaptiveLassoCV_1SE
+    mse: 0.9932
+  rank_2:
+    model: ElasticNetCV_1SE
+    mse: 0.9932
+  rank_3:
+    model: LassoCV_1SE
+    mse: 1.0044
+  rank_4:
+    model: RelaxedLassoCV_1SE
+    mse: 1.014
+  rank_5:
+    model: AFLCV_1SE
+    mse: 1.3783
+  rank_6:
+    model: UniLassoCV_1SE
+    mse: 1.4041
+by_fdr:
+  rank_1:
+    model: AFLCV_1SE
+    fdr: 0.0
+  rank_2:
+    model: AdaptiveLassoCV_1SE
+    fdr: 0.0
+  rank_3:
+    model: ElasticNetCV_1SE
+    fdr: 0.0
+  rank_4:
+    model: LassoCV_1SE
+    fdr: 0.3186
+  rank_5:
+    model: RelaxedLassoCV_1SE
+    fdr: 0.56
+  rank_6:
+    model: UniLassoCV_1SE
+    fdr: 0.7588
+by_tpr:
+  rank_1:
+    model: UniLassoCV_1SE
+    tpr: 0.002
+  rank_2:
+    model: LassoCV_1SE
+    tpr: 0.002
+  rank_3:
+    model: AdaptiveLassoCV_1SE
+    tpr: 0.0
+  rank_4:
+    model: AFLCV_1SE
+    tpr: 0.0
+  rank_5:
+    model: ElasticNetCV_1SE
+    tpr: 0.0
+  rank_6:
+    model: RelaxedLassoCV_1SE
+    tpr: 0.0

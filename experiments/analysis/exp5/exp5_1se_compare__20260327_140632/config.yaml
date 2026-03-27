@@ -1,0 +1,65 @@
+experiment: exp5_1se_compare
+description: "Exp5 \u7EDD\u5BF9\u9690\u8EAB\u9677\u9631: UniLassoCV vs LassoCV vs\
+  \ AFLCV vs RelaxedLassoCV vs ElasticNetCV vs AdaptiveLasso (all 1-SE)"
+algo: adaptive_flipped_lasso
+n_samples: 300
+n_features: 1000
+n_nonzero: 20
+correlation_type: experiment5
+rho: 0.8
+random_state: 42
+n_repeats: 5
+cv_folds: 1
+sigma: 1.0
+search_space:
+  sigma:
+  - 1.0
+compare_models:
+- algo: unilasso_cv
+  display: UniLassoCV_1SE
+  params:
+    use_1se: true
+    verbose: false
+  cv: true
+- algo: lasso_cv
+  display: LassoCV_1SE
+  params:
+    use_1se: true
+    random_state: 42
+    cv: 5
+  cv: true
+- algo: aflclassifier_cv
+  display: AFLCV_1SE
+  params:
+    lambda_ridge: 50.0
+    gamma: 0.1
+    lambda_: 0.1
+    n_folds: 5
+    verbose: false
+  cv: true
+- algo: relaxed_lasso_1se
+  display: RelaxedLassoCV_1SE
+  params:
+    cv: 5
+    random_state: 42
+    verbose: false
+  cv: true
+- algo: elasticnet_1se
+  display: ElasticNetCV_1SE
+  params:
+    cv_folds: 5
+    random_state: 42
+    verbose: false
+  cv: true
+- algo: adaptive_lasso_cv
+  display: AdaptiveLassoCV_1SE
+  params:
+    use_1se: true
+    cv: 5
+    verbose: false
+  cv: true
+output_dir: experiments/results/benchmark
+lambda_1: 0.01
+lambda_2: 0.01
+group_threshold: 0.7
+config_path: experiments/configs/benchmark/exp5_1se_compare.yaml

@@ -1491,12 +1491,14 @@ def cv_uni(
             'correlations': np.zeros_like(beta_coefs_fit)
         }
 
-        # 计算特征相关性
+        # Vectorized correlation computation
         if X.shape[1] > 0:
-            if X.shape[1] > 1:
-                univariate_results['correlations'] = np.array([np.corrcoef(X[:, j], y)[0, 1] for j in range(X.shape[1])])
-            else:
-                univariate_results['correlations'] = np.array([np.corrcoef(X[:, 0], y)[0, 1]])
+            n = X.shape[0]
+            X_centered = X - np.mean(X, axis=0)
+            y_centered = y - np.mean(y)
+            X_std = np.std(X, axis=0)
+            y_std = np.std(y)
+            univariate_results['correlations'] = (X_centered.T @ y_centered) / (X_std * y_std * n)
 
     if adaptive_weighting:
         feature_weights = _compute_feature_significance_weights(
@@ -1978,12 +1980,13 @@ def fit_uni(
         }
 
         n, p = X.shape
-        # Compute marginal correlations with y
+        # Vectorized correlation computation
         if X.shape[1] > 0:
-            if X.shape[1] > 1:
-                univariate_results['correlations'] = np.corrcoef(X.T, y)[0, 1:]
-            else:
-                univariate_results['correlations'] = np.array([np.corrcoef(X[:, 0], y)[0, 1]])
+            X_centered = X - np.mean(X, axis=0)
+            y_centered = y - np.mean(y)
+            X_std = np.std(X, axis=0)
+            y_std = np.std(y)
+            univariate_results['correlations'] = (X_centered.T @ y_centered) / (X_std * y_std * n)
 
         # Compute t-statistics for Gaussian linear case
         if family == "gaussian" and univariate_model == "linear":

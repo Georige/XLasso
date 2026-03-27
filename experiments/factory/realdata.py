@@ -180,7 +180,7 @@ def get_cv_algo_params(algo_name):
         params.update({
             "alphas": np.logspace(-4, 1, 30),
             "cv": 5,
-            "max_iter": 5000,
+            "max_iter": 20000,
             "random_state": 42,
         })
     elif algo_name == "nlasso_cv":
@@ -219,12 +219,12 @@ def get_cv_algo_params(algo_name):
         })
     elif algo_name == "adaptive_flipped_lasso_cv":
         params.update({
-            "lambda_ridge_list": (0.1, 1.0, 10.0, 100.0),
-            "gamma_list": (0.5, 1.0, 2.0),
+            "lambda_ridge_list": (10.0, 50.0, 100.0, 500.0),
+            "gamma_list": (0.3, 0.5, 1.0),
             "cv": 5,
-            "alpha_min_ratio": 1e-4,
-            "n_alpha": 100,
-            "max_iter": 2000,
+            "alpha_min_ratio": 1e-2,
+            "n_alpha": 30,
+            "max_iter": 10000,
             "tol": 1e-4,
             "standardize": True,
             "fit_intercept": True,
@@ -261,7 +261,10 @@ def run_single_iteration(algo_class, algo_params, X_train, y_train, X_test, y_te
 
     y_pred = algo.predict(X_test)
     test_mse = np.mean((y_test - y_pred) ** 2)
-    n_selected = int(np.sum(np.abs(algo.coef_) > 1e-6))
+    coef = algo.coef_
+    nonzero_mask = np.abs(coef) > 1e-6
+    n_selected = int(np.sum(nonzero_mask))
+    selected_features = np.where(nonzero_mask)[0].tolist()  # List of selected feature indices
 
     info = {"train_time": train_time, "n_selected": n_selected}
     if hasattr(algo, 'best_alpha_'):
@@ -274,12 +277,13 @@ def run_single_iteration(algo_class, algo_params, X_train, y_train, X_test, y_te
     result = {
         "test_mse": test_mse,
         "model_size": n_selected,
-        "sparsity": 1 - n_selected / len(algo.coef_) if len(algo.coef_) > 0 else 0,
+        "sparsity": 1 - n_selected / len(coef) if len(coef) > 0 else 0,
+        "selected_features": selected_features,  # Raw feature indices for each iteration
         **info,
     }
 
     if store_coefs:
-        result["coef"] = algo.coef_.copy()
+        result["coef"] = coef.copy()
 
     return result
 
@@ -790,12 +794,30 @@ def save_results(result, exp_dir, config, is_comparison=False):
         for algo_name, df in result["results"].items():
             raw_path = exp_dir / f"raw_{algo_name}.csv"
             df.to_csv(raw_path, index=False)
+
+            # Save selected features per iteration as JSON
+            features_path = exp_dir / f"selected_features_{algo_name}.json"
+            features_data = []
+            if "selected_features" in df.columns:
+                features_data = df["selected_features"].tolist()
+            with open(features_path, "w") as f:
+                json.dump(features_data, f, indent=2)
+
         summary_path = exp_dir / "summary.json"
         with open(summary_path, "w") as f:
             json.dump(_make_json_serializable(result["summaries"]), f, indent=2)
     else:
         raw_path = exp_dir / "raw.csv"
         result["results"].to_csv(raw_path, index=False)
+
+        # Save selected features per iteration as JSON
+        features_path = exp_dir / "selected_features.json"
+        features_data = []
+        if "selected_features" in result["results"].columns:
+            features_data = result["results"]["selected_features"].tolist()
+        with open(features_path, "w") as f:
+            json.dump(features_data, f, indent=2)
+
         summary_path = exp_dir / "summary.json"
         with open(summary_path, "w") as f:
             json.dump(_make_json_serializable(result["summary"]), f, indent=2)
@@ -807,6 +829,11 @@ def plot_selection_frequency(result, exp_dir, config, is_comparison=False):
 
     Creates a bar chart showing how often each feature was selected
     across all iterations. This demonstrates feature selection stability.
+
+    Visualization strategy:
+    1. Find all features with >10% selection frequency in ANY model
+    2. Sort by the first model's frequency (establishing "home advantage")
+    3. Stack vertically for comparison - reveals signal vs noise clearly
     """
     try:
         import matplotlib.pyplot as plt
@@ -815,41 +842,84 @@ def plot_selection_frequency(result, exp_dir, config, is_comparison=False):
         return
 
     if is_comparison:
-        # Multi-model comparison: grouped bar chart of top features
+        # Multi-model comparison with shared X-axis sorted by first model
         selection_freq = result.get("selection_freq", {})
         if not selection_freq:
             return
 
-        n_models = len(selection_freq)
-        top_n = 15  # Top N features to show per model
+        n_iter = config['n_iter']
+        model_names = list(selection_freq.keys())
 
-        fig, axes = plt.subplots(n_models, 1, figsize=(12, 4 * n_models), squeeze=False)
+        # Step 1: Find union of features with >10% frequency in ANY model
+        threshold = 0.10
+        union_features = set()
+        for algo_name, freq in selection_freq.items():
+            above_threshold = set(np.where(freq > threshold)[0])
+            union_features.update(above_threshold)
 
-        for model_idx, algo_name in enumerate(selection_freq.keys()):
-            freq = selection_freq[algo_name]
-            n_iter = config['n_iter']
+        if not union_features:
+            print("[realdata] No features above 10% threshold in any model")
+            return
 
-            # Get top features
-            top_indices = np.argsort(freq)[::-1][:top_n]
-            top_freq = freq[top_indices]
+        union_features = sorted(union_features)
+        n_shared = len(union_features)
+        print(f"[realdata] Shared features (>10%% in any model): {n_shared}")
 
-            ax = axes[model_idx, 0]
-            bars = ax.bar(range(len(top_indices)), top_freq * 100, color=f"C{model_idx}", alpha=0.7)
-            ax.set_ylabel('Selection Frequency (%)')
-            ax.set_title(f'{algo_name} - Top {top_n} Feature Selection Frequency')
-            ax.set_xticks(range(len(top_indices)))
-            ax.set_xticklabels([f'F{i}' for i in top_indices], rotation=45)
-            ax.axhline(y=50, color='red', linestyle='--', alpha=0.5, label='50% threshold')
-            ax.legend()
+        # Step 2: Sort by first model's frequency (home advantage)
+        first_model = model_names[0]
+        first_freq = selection_freq[first_model]
 
-            # Add value labels on bars
-            for bar, f in zip(bars, top_freq):
-                if f > 0.1:
-                    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                            f'{f*100:.0f}%', ha='center', va='bottom', fontsize=8)
+        # Create feature index -> sort key mapping
+        # Features with higher freq in first model come first
+        sort_key = {f: first_freq[f] for f in union_features}
+        sorted_features = sorted(union_features, key=lambda f: sort_key[f], reverse=True)
 
+        # Build frequency matrix for plotting
+        freq_matrix = np.zeros((len(model_names), n_shared))
+        for i, algo_name in enumerate(model_names):
+            for j, feat_idx in enumerate(sorted_features):
+                freq_matrix[i, j] = selection_freq[algo_name][feat_idx] * 100
+
+        # Step 3: Create figure with stacked subplots
+        fig, axes = plt.subplots(len(model_names), 1, figsize=(16, 4 * len(model_names)), squeeze=False)
+
+        # Color scheme - use distinct colors for each model
+        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#3B1F2B']
+
+        for i, (algo_name, ax) in enumerate(zip(model_names, axes[:, 0])):
+            bars = ax.bar(range(n_shared), freq_matrix[i], color=colors[i % len(colors)], alpha=0.85)
+
+            ax.set_ylabel('Selection Freq (%)', fontsize=10)
+            ax.set_title(f'{algo_name}', fontsize=12, fontweight='bold')
+            ax.set_xlim(-0.5, n_shared - 0.5)
+            ax.set_ylim(0, 105)
+            ax.axhline(y=50, color='red', linestyle='--', alpha=0.4, linewidth=1)
+            ax.axhline(y=90, color='green', linestyle='--', alpha=0.4, linewidth=1)
+
+            # X-axis: show every 5th label to avoid crowding
+            tick_positions = list(range(0, n_shared, max(1, n_shared // 20)))
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels([f'F{sorted_features[k]}' for k in tick_positions], rotation=45, fontsize=8)
+
+            # Mark "pillar" features (90%+) and "noise" features (0% in first model)
+            first_model_freq = freq_matrix[0]
+            pillar_count = np.sum(first_model_freq >= 90)
+            noise_count = np.sum(first_model_freq == 0)
+
+            # Add annotation for pillars
+            if pillar_count > 0:
+                ax.annotate(f'{pillar_count} pillars\n(90%+)', xy=(0.02, 0.95),
+                           xycoords='axes fraction', fontsize=9, color='green', va='top')
+            if noise_count > 0:
+                ax.annotate(f'{noise_count} noise\n(0% in 1st)', xy=(0.98, 0.95),
+                           xycoords='axes fraction', fontsize=9, color='red', va='top', ha='right')
+
+        axes[-1, 0].set_xlabel('Features (sorted by 1st model frequency, left=highest)', fontsize=10)
+
+        plt.suptitle(f'Feature Selection Frequency Comparison\n(n={n_iter} iterations, {n_shared} shared features)',
+                    fontsize=14, fontweight='bold', y=1.02)
         plt.tight_layout()
-        fig.savefig(exp_dir / "selection_frequency_comparison.png", dpi=150)
+        fig.savefig(exp_dir / "selection_frequency_comparison.png", dpi=150, bbox_inches='tight')
         plt.close()
         print(f"[realdata] Frequency plot saved to {exp_dir / 'selection_frequency_comparison.png'}")
 
@@ -864,7 +934,7 @@ def plot_selection_frequency(result, exp_dir, config, is_comparison=False):
 
         # For high-dimensional data, only show top features
         if n_features > 100:
-            top_n = 50
+            top_n = 100
             top_indices = np.argsort(selection_freq)[::-1][:top_n]
             top_freq = selection_freq[top_indices]
 
@@ -878,11 +948,6 @@ def plot_selection_frequency(result, exp_dir, config, is_comparison=False):
             ax.axhline(y=50, color='red', linestyle='--', alpha=0.5, label='50% threshold')
             ax.axhline(y=90, color='green', linestyle='--', alpha=0.5, label='90% threshold (stable)')
             ax.legend()
-
-            # Annotate very high frequency features
-            for i, (idx, f) in enumerate(zip(top_indices[:10], top_freq[:10])):
-                ax.annotate(f'F{idx}\n{f*100:.0f}%', xy=(i, f*100), xytext=(i, f*100+5),
-                           ha='center', va='bottom', fontsize=7)
         else:
             # Show all features
             fig, ax = plt.subplots(figsize=(max(14, n_features * 0.3), 6))

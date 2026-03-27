@@ -73,13 +73,16 @@ class RelaxedLassoCV1SE(BaseEstimator, RegressorMixin):
         if self.verbose:
             print("Relaxed Lasso Stage 1: 运行 LassoCV 寻找 1-SE 阈值...")
 
+        # precompute=False for high-dimensional data (n << p) to save memory
+        precompute = False if n_samples < n_features else 'auto'
         lasso_cv = LassoCV(
             cv=self.cv,
             random_state=self.random_state,
             n_jobs=-1,
             max_iter=5000,
             eps=self.eps,
-            n_alphas=self.n_alphas
+            n_alphas=self.n_alphas,
+            precompute=precompute
         )
 
         # 忽略收敛警告
@@ -105,21 +108,21 @@ class RelaxedLassoCV1SE(BaseEstimator, RegressorMixin):
         candidate_indices = np.where(candidates_mask)[0]
 
         if len(candidate_indices) > 0:
-            # 对每个候选 alpha 实际 fit 一次，数非零系数，选最稀疏的
-            n_nonzero_list = []
-            for idx in candidate_indices:
-                alpha = lasso_cv.alphas_[idx]
-                model_tmp = Lasso(
-                    alpha=alpha,
-                    max_iter=5000,
-                    random_state=self.random_state
-                )
-                model_tmp.fit(X, y)
-                n_nonzero = np.sum(model_tmp.coef_ != 0)
-                n_nonzero_list.append(n_nonzero)
+            # Find the candidate alpha with minimum non-zero count
+            # Use a small subset of candidate indices to avoid refitting all
+            # Sample at most 20 candidates to balance accuracy vs speed
+            max_check = min(20, len(candidate_indices))
+            sampled_indices = candidate_indices[:max_check]
 
-            best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
-            alpha_1se = lasso_cv.alphas_[best_candidate_idx]
+            n_nonzero_candidates = []
+            for idx in sampled_indices:
+                alpha = lasso_cv.alphas_[idx]
+                model_tmp = Lasso(alpha=alpha, max_iter=5000, random_state=self.random_state)
+                model_tmp.fit(X, y)
+                n_nonzero_candidates.append(np.sum(model_tmp.coef_ != 0))
+
+            best_local_idx = np.argmin(n_nonzero_candidates)
+            alpha_1se = lasso_cv.alphas_[sampled_indices[best_local_idx]]
         else:
             alpha_1se = lasso_cv.alphas_[best_idx]
         self.alpha_1se_ = alpha_1se

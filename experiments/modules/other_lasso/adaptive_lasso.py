@@ -89,7 +89,9 @@ class AdaptiveLasso(BaseLasso):
 
         # 计算自适应权重: w_j = 1 / |beta_ols_j|^gamma
         eps = 1e-10
-        weights = 1.0 / (np.abs(beta_ols) + eps) ** self.gamma
+        abs_beta = np.abs(beta_ols)
+        abs_beta_safe = np.clip(abs_beta, eps, None)  # Prevent near-zero
+        weights = 1.0 / abs_beta_safe ** self.gamma
 
         # 第二步：带权重的L1正则化回归
         # 对特征进行加权，等价于在目标函数中加入权重
@@ -205,6 +207,28 @@ class AdaptiveLassoCV(AdaptiveLasso):
             'alpha': self.alphas,
             'gamma': self.gammas
         }
+
+        # 预计算初始beta以避免重复Ridge fits
+        X_processed = self._preprocess(X, y)[0]
+        if self.initial_estimator is not None:
+            estimator = clone(self.initial_estimator)
+            estimator.fit(X_processed, y, sample_weight=sample_weight)
+            beta_ols = estimator.coef_.flatten()
+        else:
+            if self.family.lower() == "gaussian":
+                if X.shape[0] > X.shape[1]:
+                    ols = LinearRegression(fit_intercept=False)
+                    ols.fit(X_processed, y, sample_weight=sample_weight)
+                    beta_ols = ols.coef_
+                else:
+                    ridge = Ridge(alpha=0.1, fit_intercept=False, max_iter=self.max_iter)
+                    ridge.fit(X_processed, y, sample_weight=sample_weight)
+                    beta_ols = ridge.coef_
+            else:
+                lr = LogisticRegression(penalty='l2', C=1.0, fit_intercept=False,
+                                      max_iter=self.max_iter, solver='liblinear')
+                lr.fit(X_processed, y, sample_weight=sample_weight)
+                beta_ols = lr.coef_[0]
 
         # 网格搜索
         grid = GridSearchCV(
