@@ -67,6 +67,7 @@ ALGO_REGISTRY = {
     "nlclassifier_cv": NLassoClassifierCV,
     # AdaptiveFlippedLasso family
     "adaptive_flipped_lasso": AdaptiveFlippedLasso,
+    "adaptive_flipped_lasso_cv": AdaptiveFlippedLassoCV,
     "adaptive_flipped_lasso_ebic": AdaptiveFlippedLassoEBIC,
     "aflclassifier": AdaptiveFlippedLassoClassifier,
     "aflclassifier_cv": AdaptiveFlippedLassoCV,
