@@ -1,0 +1,2 @@
+model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std,sparsity_mean,sparsity_std,n_selected_mean,n_selected_std
+UniLassoCV,0.7922,0.0648,6.4762,7.0607,0.9233,0.1072,0.3008,0.055,0.6992,0.055,0.9233,0.1072,0.9203,0.0843,0.9469,0.0062,26.5333,3.1034

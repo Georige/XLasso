@@ -283,6 +283,8 @@ def run_trial(config, parent_dir):
             sigma=config.get("sigma", 1.0),
             correlation_type=config.get("correlation_type", "pairwise"),
             rho=config.get("rho", 0.5),
+            block_size=config.get("block_size", 10),
+            n_blocks=config.get("n_blocks", 50),
         )
 
         # Get algorithm
@@ -871,15 +873,44 @@ def get_benchmark_algo_params(algo_name, config):
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
         })
-    elif algo_name == "aflclassifier_cv":
+    elif algo_name == "aflclassifier":
+        # Same as adaptive_flipped_lasso
         params.update({
             "lambda_ridge": config.get("lambda_ridge", 10.0),
-            "lambda_min_ratio": config.get("lambda_min_ratio", 1e-4),
-            "n_lambda": config.get("n_lambda", 50),
-            "cv": config.get("cv_folds", 5),
+            "lambda_": config.get("lambda_", 0.01),
             "gamma": config.get("gamma", 1.0),
             "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
             "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "aflclassifier_cv":
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 1.0, 10.0]),
+            "gamma_list": config.get("gamma_list", [0.5, 1.0, 2.0]),
+            "cv": config.get("cv_folds", 5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "adaptive_flipped_lasso_ebic":
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 0.5, 1.0, 2.0, 5.0, 10.0]),
+            "gamma_list": config.get("gamma_list", [0.3, 0.5, 0.7, 1.0]),
+            "ebic_gamma": config.get("ebic_gamma", 0.5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "aflclassifier_ebic":
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 0.5, 1.0, 2.0, 5.0, 10.0]),
+            "gamma_list": config.get("gamma_list", [0.3, 0.5, 0.7, 1.0]),
+            "ebic_gamma": config.get("ebic_gamma", 0.5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
         })
@@ -943,10 +974,35 @@ def get_benchmark_algo_params(algo_name, config):
         params.update({
             "lambda_1": config.get("lambda_1", 0.01),
             "lambda_2": config.get("lambda_2", 0.01),
-            "group_threshold": config.get("group_threshold", 0.7),
             "standardize": config.get("standardize", True),
             "fit_intercept": config.get("fit_intercept", True),
             "family": config.get("family", "gaussian"),
+            "n_folds": config.get("cv_folds", 5),
+        })
+    elif algo_name == "fused_lasso_cv":
+        params.update({
+            "alphas": np.logspace(-4, 1, 30),
+            "cv": config.get("cv_folds", 5),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "elasticnet_1se":
+        # ElasticNet1SE has its own specific parameters
+        params.update({
+            "cv_folds": config.get("cv_folds", 5),
+            "l1_ratios": [0.1, 0.5, 0.7, 0.9, 0.95, 0.99, 1.0],
+            "max_iter": config.get("max_iter", 5000),
+            "random_state": config.get("random_state", 42),
+            "verbose": False,
+        })
+    elif algo_name == "relaxed_lasso_1se":
+        # RelaxedLassoCV1SE has its own specific parameters
+        params.update({
+            "cv": config.get("cv_folds", 5),
+            "random_state": config.get("random_state", 42),
+            "eps": 1e-3,
+            "n_alphas": 100,
+            "verbose": False,
         })
     else:
         params.update({
@@ -988,6 +1044,8 @@ def run_benchmark_trial(config, parent_dir):
             sigma=config.get("sigma", 1.0),
             correlation_type=config.get("correlation_type", "pairwise"),
             rho=config.get("rho", 0.5),
+            block_size=config.get("block_size", 10),
+            n_blocks=config.get("n_blocks", 50),
         )
 
         # Get algorithm
@@ -1028,6 +1086,15 @@ def run_benchmark_trial(config, parent_dir):
             )
             fold_metrics["fold"] = repeat
             fold_metrics["train_time"] = train_time
+            # Capture CV parameters if available (AFL CV with internal CV)
+            if hasattr(algo, 'best_gamma_'):
+                fold_metrics["best_gamma"] = algo.best_gamma_
+            if hasattr(algo, 'best_alpha_'):
+                fold_metrics["best_alpha"] = algo.best_alpha_
+            if hasattr(algo, 'best_lambda_ridge_'):
+                fold_metrics["best_lambda_ridge"] = algo.best_lambda_ridge_
+            if hasattr(algo, 'cv_score_'):
+                fold_metrics["cv_score"] = algo.cv_score_
             metrics_list.append(fold_metrics)
         else:
             # CV
@@ -1059,6 +1126,15 @@ def run_benchmark_trial(config, parent_dir):
                 )
                 fold_metrics["fold"] = fold_idx
                 fold_metrics["train_time"] = train_time
+                # Capture CV parameters if available (AFL CV with internal CV)
+                if hasattr(algo_fold, 'best_gamma_'):
+                    fold_metrics["best_gamma"] = algo_fold.best_gamma_
+                if hasattr(algo_fold, 'best_alpha_'):
+                    fold_metrics["best_alpha"] = algo_fold.best_alpha_
+                if hasattr(algo_fold, 'best_lambda_ridge_'):
+                    fold_metrics["best_lambda_ridge"] = algo_fold.best_lambda_ridge_
+                if hasattr(algo_fold, 'cv_score_'):
+                    fold_metrics["cv_score"] = algo_fold.cv_score_
                 repeat_metrics.append(fold_metrics)
 
             # Average across folds

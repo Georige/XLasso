@@ -200,7 +200,7 @@ class GroupLassoCV(GroupLasso):
     """
     def __init__(self, alphas=None, groups=None, fit_intercept=True, standardize=True,
                  max_iter=1000, tol=1e-4, group_weights=None, family="gaussian",
-                 cv=5, scoring=None, n_jobs=None):
+                 cv=5, scoring=None, n_jobs=None, use_1se=True):
         """
         初始化参数
         Parameters:
@@ -215,6 +215,7 @@ class GroupLassoCV(GroupLasso):
             cv: 交叉验证折数
             scoring: 评价指标，默认：回归用neg_mean_squared_error，分类用roc_auc
             n_jobs: 并行作业数
+            use_1se: 是否使用1-SE规则选择更保守的模型（更稀疏），默认True
         """
         super().__init__(
             alpha=None, groups=groups, fit_intercept=fit_intercept,
@@ -225,6 +226,7 @@ class GroupLassoCV(GroupLasso):
         self.cv = cv
         self.scoring = scoring
         self.n_jobs = n_jobs
+        self.use_1se = use_1se
 
     def fit(self, X, y, sample_weight=None):
         """
@@ -235,6 +237,10 @@ class GroupLassoCV(GroupLasso):
         from sklearn.preprocessing import StandardScaler
 
         X, y = check_X_y(X, y)
+
+        # 保存用于后续 1-SE 计算
+        self._X_for_cv = X
+        self._y_for_cv = y
 
         # 如果groups为None，自动分组
         if self.groups is None:
@@ -287,14 +293,87 @@ class GroupLassoCV(GroupLasso):
         self.cv_results_ = grid.cv_results_
         self.alpha = self.best_params_['alpha']
 
-        # 复制最优模型的属性
-        best_model = grid.best_estimator_
-        self.coef_ = best_model.coef_
-        self.intercept_ = best_model.intercept_
-        self.group_indices_ = best_model.group_indices_
-        self.n_groups_ = best_model.n_groups_
-        self.n_features_in_ = best_model.n_features_in_
-        self.scaler_X = best_model.scaler_X
-        self.scaler_y = best_model.scaler_y
+        # 1-SE 规则：选择最稀疏的模型，其分数在 best - 1*std 范围内
+        if self.use_1se:
+            best_alpha_1se = self._select_1se_alpha()
+            if hasattr(self, 'verbose') and self.verbose:
+                print(f"[GroupLassoCV] Best alpha (CV): {self.alpha:.6f}")
+                print(f"[GroupLassoCV] 1-SE alpha:      {best_alpha_1se:.6f}")
+            self.alpha = best_alpha_1se
+            # 重新拟合最终模型
+            final_model = GroupLasso(
+                alpha=self.alpha, groups=self.groups,
+                fit_intercept=self.fit_intercept, standardize=self.standardize,
+                max_iter=self.max_iter, tol=self.tol,
+                group_weights=self.group_weights, family=self.family
+            )
+            final_model.fit(X, y, sample_weight=sample_weight)
+            self.coef_ = final_model.coef_
+            self.intercept_ = final_model.intercept_
+            self.group_indices_ = final_model.group_indices_
+            self.n_groups_ = final_model.n_groups_
+            self.n_features_in_ = final_model.n_features_in_
+            self.scaler_X = final_model.scaler_X
+            self.scaler_y = final_model.scaler_y
+        else:
+            # 复制最优模型的属性
+            best_model = grid.best_estimator_
+            self.coef_ = best_model.coef_
+            self.intercept_ = best_model.intercept_
+            self.group_indices_ = best_model.group_indices_
+            self.n_groups_ = best_model.n_groups_
+            self.n_features_in_ = best_model.n_features_in_
+            self.scaler_X = best_model.scaler_X
+            self.scaler_y = best_model.scaler_y
 
         return self
+
+    def _select_1se_alpha(self):
+        """
+        1-SE 规则：选择最简洁的模型，其分数在 best - 1*SE 范围内
+
+        在候选中选择非零系数数量最少的（最稀疏的）
+
+        Returns:
+            best_alpha_1se: 通过1-SE检验的最稀疏模型
+        """
+        cv_results = self.cv_results_
+        mean_score = cv_results['mean_test_score']
+        std_score = cv_results['std_test_score']
+        alphas = cv_results['param_alpha']
+
+        # 找出最佳分数
+        best_score = np.max(mean_score)
+
+        # 严格使用标准误 SE = std / sqrt(K)
+        K = self.cv
+        se_score = std_score / np.sqrt(K)
+
+        # 计算阈值：best_score - 1*SE (score 越大越好，所以用减号)
+        threshold = best_score - se_score
+
+        # 找出所有通过 1-SE 检验的候选
+        candidates_mask = mean_score >= threshold
+        candidate_indices = np.where(candidates_mask)[0]
+
+        if len(candidate_indices) == 0:
+            return self.best_params_['alpha']
+
+        # 计算每个候选的非零系数数量，选择最稀疏的
+        n_nonzero_list = []
+        for idx in candidate_indices:
+            alpha = alphas[idx]
+            # 临时创建模型获取系数
+            model = GroupLasso(
+                alpha=alpha, groups=self.groups,
+                fit_intercept=self.fit_intercept, standardize=self.standardize,
+                max_iter=self.max_iter, tol=self.tol,
+                group_weights=self.group_weights, family=self.family
+            )
+            model.fit(self._X_for_cv, self._y_for_cv)
+            n_nonzero = np.sum(np.abs(model.coef_) > 1e-6)
+            n_nonzero_list.append(n_nonzero)
+
+        # 选择非零系数最少的（最稀疏的）
+        best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
+        return float(alphas[best_candidate_idx])

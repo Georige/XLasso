@@ -1,0 +1,28 @@
+by_f1:
+  rank_1:
+    model: AFL-Fixed
+    f1: 0.9878
+  rank_2:
+    model: AFL-CV-1SE
+    f1: 0.9685
+by_mse:
+  rank_1:
+    model: AFL-CV-1SE
+    mse: 0.2838
+  rank_2:
+    model: AFL-Fixed
+    mse: 0.7871
+by_fdr:
+  rank_1:
+    model: AFL-Fixed
+    fdr: 0.0238
+  rank_2:
+    model: AFL-CV-1SE
+    fdr: 0.059
+by_tpr:
+  rank_1:
+    model: AFL-CV-1SE
+    tpr: 1.0
+  rank_2:
+    model: AFL-Fixed
+    tpr: 1.0

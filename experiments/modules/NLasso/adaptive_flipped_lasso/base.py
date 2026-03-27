@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import Lasso, RidgeCV, lasso_path
+from sklearn.linear_model import Lasso, Ridge, RidgeCV, lasso_path
 
 # 性能优化常量
 _COPY_WHEN_POSSIBLE = False
@@ -399,16 +399,16 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         if sample_weight is not None:
             sample_weight = np.asarray(sample_weight, dtype=_DTYPE)
 
-        # 标准化（仅在阶段三最终拟合时对全量数据做一次，
-        # 阶段一/二的 CV 严格隔离中不涉及标准化，保持与 spec 一致）
+        # 标准化：在 CV 循环内部进行（每个 fold 独立），避免验证集数据泄露
+        # 阶段三最终拟合时会用全量数据重新 fit scaler
         if self.standardize:
             self.scaler_ = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
-            X_for_cv = self.scaler_.fit_transform(X)
+            # 仅用于存储 fitted scaler 的占位，后续在 CV 循环内和阶段三重新处理
+            self.scaler_._fitted = False
         else:
-            X_for_cv = X
             self.scaler_ = None
 
-        n = X_for_cv.shape[0]
+        n = X.shape[0]
         n_gamma = len(self.gamma_list)
         eps = 1e-5
 
@@ -416,11 +416,20 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         # 阶段一：K 折严格内部寻优
         # ============================================================
         error_matrix = np.full((n_gamma, self.n_alpha, self.cv), np.inf)
+        nselected_matrix = np.zeros((n_gamma, self.n_alpha, self.cv))
         kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
 
-        for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(X_for_cv)):
-            X_tr, X_va = X_for_cv[train_idx], X_for_cv[val_idx]
+        for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(X)):
+            X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
+
+            # 每个 fold 独立标准化：仅用训练集 fit，用训练集统计量 transform 验证集
+            if self.standardize:
+                scaler_fold = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
+                X_tr = scaler_fold.fit_transform(X_tr_raw)
+                X_va = scaler_fold.transform(X_va_raw)
+            else:
+                X_tr, X_va = X_tr_raw, X_va_raw
 
             if self.verbose:
                 print(f"[Fold {fold_idx + 1}/{self.cv}] train={len(train_idx)}, val={len(val_idx)}")
@@ -464,38 +473,78 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
                 mse_path = np.mean((y_va[:, np.newaxis] - preds) ** 2, axis=0)
                 error_matrix[gamma_idx, :, fold_idx] = mse_path
 
+                # 追踪每个 alpha 的非零系数数量（用于 1-SE 法则）
+                nselected_path = np.sum(coefs_path != 0, axis=0)  # (n_alphas,)
+                nselected_matrix[gamma_idx, :, fold_idx] = nselected_path
+
         # ============================================================
-        # 阶段二：选拔最优参数
+        # 阶段二：选拔最优参数（1-SE 法则）
         # ============================================================
         mean_error = np.mean(error_matrix, axis=2)  # (n_gamma, n_alpha)
+        std_error = np.std(error_matrix, axis=2) / np.sqrt(self.cv)  # SE of mean
+        mean_nselected = np.mean(nselected_matrix, axis=2)  # (n_gamma, n_alpha)
 
-        best_gamma_idx, best_alpha_idx = np.unravel_index(
-            np.argmin(mean_error), mean_error.shape
-        )
+        # 1-SE 法则：选择最稀疏的模型，其 MSE 在 min(MSE) + 1*SE 范围内
+        min_mse = np.min(mean_error)
+        threshold = min_mse + std_error
+
+        # 找到所有 MSE <= threshold 的候选组合
+        candidates_mask = mean_error <= threshold
+
+        if not np.any(candidates_mask):
+            # Fallback：如果没有候选（不应该发生），使用原始最小 MSE
+            if self.verbose:
+                print("[Stage 2] Warning: No candidates within 1-SE, using standard min-MSE")
+            best_gamma_idx, best_alpha_idx = np.unravel_index(
+                np.argmin(mean_error), mean_error.shape
+            )
+        else:
+            # 在候选中选择 n_selected 最少的（最稀疏的）
+            masked_nselected = np.where(candidates_mask, mean_nselected, np.inf)
+            best_flat_idx = np.argmin(masked_nselected)
+            best_gamma_idx, best_alpha_idx = np.unravel_index(best_flat_idx, mean_error.shape)
+
         self.best_gamma_ = self.gamma_list[best_gamma_idx]
 
         # 重建该 gamma 对应的 alpha 路径（用于取 best_alpha）
+        # 注意：Stage 2 仅用于选择 best_alpha，不涉及验证所以可用全量数据
+        if self.standardize:
+            X_for_stage2 = self.scaler_.fit_transform(X)
+        else:
+            X_for_stage2 = X
+
         ridge_cv_tmp = RidgeCV(alphas=self.lambda_ridge_list, cv=3)
-        ridge_cv_tmp.fit(X_for_cv, y)
+        ridge_cv_tmp.fit(X_for_stage2, y)
         beta_ridge_tmp = ridge_cv_tmp.coef_
         signs_tmp = np.sign(beta_ridge_tmp)
         signs_tmp[signs_tmp == 0] = 1.0
         raw_weights_tmp = 1.0 / (np.abs(beta_ridge_tmp) + eps) ** self.best_gamma_
         weights_tmp = raw_weights_tmp / np.mean(raw_weights_tmp)
-        X_adaptive_tmp = (X_for_cv * signs_tmp) / weights_tmp
+        X_adaptive_tmp = (X_for_stage2 * signs_tmp) / weights_tmp
         alpha_max_tmp = np.max(np.abs(X_adaptive_tmp.T @ y)) / len(y)
         alpha_min_tmp = alpha_max_tmp * self.alpha_min_ratio
         alphas_final = np.logspace(np.log10(alpha_min_tmp), np.log10(alpha_max_tmp), self.n_alpha)[::-1]
         self.best_alpha_ = alphas_final[best_alpha_idx]
         best_cv_mse = mean_error[best_gamma_idx, best_alpha_idx]
+        best_cv_nselected = mean_nselected[best_gamma_idx, best_alpha_idx]
         self.cv_score_ = -best_cv_mse
 
         if self.verbose:
-            print(f"\n[Stage 2] Best: gamma={self.best_gamma_}, alpha={self.best_alpha_:.6f}, CV_MSE={best_cv_mse:.6f}")
+            print(f"\n[Stage 2] 1-SE Rule:")
+            print(f"  min_MSE={min_mse:.6f}, threshold={threshold:.6f}")
+            print(f"  n_candidates={np.sum(candidates_mask)}")
+            print(f"  selected: gamma={self.best_gamma_}, alpha={self.best_alpha_:.6f}")
+            print(f"  selected: CV_MSE={best_cv_mse:.6f}, n_selected≈{best_cv_nselected:.1f}")
 
         # ============================================================
         # 阶段三：全量数据终极拟合
         # ============================================================
+        # 用全量数据 fit scaler（阶段一/二的 CV 中已避免泄露，此处可接受）
+        if self.standardize:
+            X_for_cv = self.scaler_.fit_transform(X)
+        else:
+            X_for_cv = X
+
         ridge_final = RidgeCV(alphas=self.lambda_ridge_list, cv=self.cv)
         ridge_final.fit(X_for_cv, y)
         self.beta_ridge_ = ridge_final.coef_
@@ -540,3 +589,273 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         from sklearn.metrics import mean_squared_error
         y_pred = self.predict(X)
         return -mean_squared_error(y, y_pred, sample_weight=sample_weight)
+
+
+class AdaptiveFlippedLassoEBIC(BaseAdaptiveFlippedLasso, RegressorMixin):
+    """
+    AdaptiveFlippedLasso with EBIC-based parameter selection.
+
+    EBIC (Extended BIC) formula:
+        EBIC = n * ln(RSS/n) + |S| * ln(n) + 2 * gamma * ln(C(p, |S|))
+
+    EBIC 厌恶假阳性，会自然地把 lambda_ridge 压在较小值，保证权重有效性。
+    """
+
+    def __init__(
+        self,
+        lambda_ridge_list: tuple = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0),
+        gamma_list: tuple = (0.3, 0.5, 0.7, 1.0),
+        ebic_gamma: float = 0.5,
+        alpha_min_ratio: float = 1e-4,
+        n_alpha: int = 100,
+        max_iter: int = 1000,
+        tol: float = 1e-4,
+        standardize: bool = False,
+        fit_intercept: bool = True,
+        random_state: int = 2026,
+        verbose: bool = False,
+    ):
+        self.lambda_ridge_list = lambda_ridge_list
+        self.gamma_list = gamma_list
+        self.ebic_gamma = ebic_gamma
+        self.alpha_min_ratio = alpha_min_ratio
+        self.n_alpha = n_alpha
+        self.max_iter = max_iter
+        self.tol = tol
+        self.standardize = standardize
+        self.fit_intercept = fit_intercept
+        self.random_state = random_state
+        self.verbose = verbose
+
+        self._init_fitted_attributes()
+
+    def get_params(self, deep: bool = True) -> dict:
+        params = {
+            'lambda_ridge_list': self.lambda_ridge_list,
+            'gamma_list': self.gamma_list,
+            'ebic_gamma': self.ebic_gamma,
+            'alpha_min_ratio': self.alpha_min_ratio,
+            'n_alpha': self.n_alpha,
+            'max_iter': self.max_iter,
+            'tol': self.tol,
+            'standardize': self.standardize,
+            'fit_intercept': self.fit_intercept,
+            'random_state': self.random_state,
+            'verbose': self.verbose,
+        }
+        return params
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            if key in self.get_params():
+                setattr(self, key, value)
+            else:
+                raise ValueError(f"Invalid parameter '{key}' for estimator {self.__class__.__name__}")
+        return self
+
+    def _compute_ebic(self, y_true: np.ndarray, y_pred: np.ndarray, n_selected: int, p: int) -> float:
+        """
+        计算 EBIC 值。
+
+        EBIC = n * ln(RSS/n) + |S| * ln(n) + 2 * gamma * ln(C(p, |S|))
+
+        其中 C(p, |S|) = p! / (|S|! * (p - |S|)!)
+        """
+        n = len(y_true)
+        rss = np.sum((y_true - y_pred) ** 2)
+
+        # 第一项：拟合误差
+        term1 = n * np.log(rss / n + 1e-10)
+
+        # 第二项：模型复杂度（特征数量）
+        term2 = n_selected * np.log(n + 1e-10)
+
+        # 第三项：高维惩罚
+        # ln(C(p, |S|)) = ln(p!) - ln(|S|!) - ln((p-|S|)!)
+        # 使用 Stirling 近似避免阶乘溢出
+        if n_selected == 0:
+            term3 = 0
+        elif n_selected == p:
+            term3 = 2 * self.ebic_gamma * np.log(1)  # C(p,p) = 1
+        else:
+            # log(C(p,k)) ≈ k * log(p/k) for large p, small k
+            # 更精确：使用 scipy.special.gammaln
+            from scipy.special import gammaln
+            log_comb = gammaln(p + 1) - gammaln(n_selected + 1) - gammaln(p - n_selected + 1)
+            term3 = 2 * self.ebic_gamma * log_comb
+
+        ebic = term1 + term2 + term3
+        return ebic
+
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
+        """
+        使用 EBIC 准则拟合 AdaptiveFlippedLasso。
+        """
+        from sklearn.model_selection import KFold
+        from sklearn.metrics import mean_squared_error
+        from scipy.special import gammaln
+
+        X, y = check_X_y(
+            X, y,
+            accept_sparse=['csr', 'csc'],
+            dtype=_DTYPE,
+            copy=_COPY_WHEN_POSSIBLE,
+            ensure_2d=True,
+            ensure_min_samples=2,
+            ensure_min_features=2
+        )
+        self.n_features_in_ = X.shape[1]
+        n = X.shape[0]
+        p = self.n_features_in_
+
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight, dtype=_DTYPE)
+
+        # 标准化
+        if self.standardize:
+            self.scaler_ = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
+            X = self.scaler_.fit_transform(X)
+        else:
+            self.scaler_ = None
+
+        eps = 1e-5
+
+        if self.verbose:
+            print(f"[EBIC] n={n}, p={p}, searching {len(self.gamma_list)} gammas x {self.n_alpha} alphas")
+
+        # ============================================================
+        # 阶段一：对每个 (gamma, lambda_ridge, alpha) 计算 EBIC
+        # ============================================================
+        best_ebic = np.inf
+        best_gamma = None
+        best_lambda_ridge = None
+        best_alpha = None
+        best_coefs = None
+
+        for gamma in self.gamma_list:
+            for lambda_ridge in self.lambda_ridge_list:
+                # Stage 1: Ridge 回归
+                ridge = Ridge(alpha=lambda_ridge, fit_intercept=True, random_state=self.random_state)
+                ridge.fit(X, y)
+                beta_ridge = ridge.coef_
+
+                signs = np.sign(beta_ridge)
+                signs[signs == 0] = 1.0
+
+                # 计算权重
+                raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** gamma
+                weights = raw_weights / np.mean(raw_weights)
+
+                # 空间重构
+                X_adaptive = (X * signs) / weights
+
+                # alpha 搜索路径
+                alpha_max = np.max(np.abs(X_adaptive.T @ y)) / n
+                alpha_min = alpha_max * self.alpha_min_ratio
+                alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
+                for alpha in alphas:
+                    # Stage 2: Lasso 拟合
+                    lasso = Lasso(
+                        alpha=alpha,
+                        positive=True,
+                        fit_intercept=self.fit_intercept,
+                        max_iter=self.max_iter,
+                        tol=self.tol,
+                        random_state=self.random_state,
+                    )
+                    lasso.fit(X_adaptive, y)
+
+                    # 还原系数到原始空间
+                    coef_adaptive = lasso.coef_
+                    n_selected = np.sum(coef_adaptive > 0)
+
+                    if n_selected == 0:
+                        # 全零解，跳过
+                        continue
+
+                    # 逆变换
+                    coef_final = (coef_adaptive / weights) * signs
+
+                    # 预测并计算 RSS
+                    if self.fit_intercept:
+                        intercept = np.mean(y) - np.mean(X @ coef_final)
+                        y_pred = X @ coef_final + intercept
+                    else:
+                        y_pred = X @ coef_final
+
+                    # 计算 EBIC
+                    ebic = self._compute_ebic(y, y_pred, n_selected, p)
+
+                    if ebic < best_ebic:
+                        best_ebic = ebic
+                        best_gamma = gamma
+                        best_lambda_ridge = lambda_ridge
+                        best_alpha = alpha
+                        best_coefs = coef_final.copy()
+                        best_intercept = lasso.intercept_ if self.fit_intercept else 0
+
+                        if self.verbose:
+                            print(f"[EBIC] New best: gamma={gamma:.2f}, lambda_ridge={lambda_ridge:.2f}, "
+                                  f"alpha={alpha:.6f}, n_selected={n_selected}, EBIC={ebic:.4f}")
+
+        if best_gamma is None:
+            raise RuntimeError("No valid model found (all n_selected=0)")
+
+        self.best_gamma_ = best_gamma
+        self.best_lambda_ridge_ = best_lambda_ridge
+        self.best_alpha_ = best_alpha
+        self.best_ebic_ = best_ebic
+        self.ebic_score_ = -best_ebic
+
+        if self.verbose:
+            print(f"\n[EBIC] Selected: gamma={best_gamma}, lambda_ridge={best_lambda_ridge}, "
+                  f"alpha={best_alpha:.6f}, n_selected={np.sum(best_coefs > 0)}")
+
+        # ============================================================
+        # 阶段二：用最优参数在全量数据上最终拟合
+        # ============================================================
+        # Stage 1
+        ridge_final = Ridge(alpha=self.best_lambda_ridge_, fit_intercept=True, random_state=self.random_state)
+        ridge_final.fit(X, y)
+        self.beta_ridge_ = ridge_final.coef_
+
+        signs_final = np.sign(self.beta_ridge_)
+        signs_final[signs_final == 0] = 1.0
+        self.signs_ = signs_final
+
+        raw_weights_final = 1.0 / (np.abs(self.beta_ridge_) + eps) ** self.best_gamma_
+        self.weights_ = raw_weights_final / np.mean(raw_weights_final)
+
+        X_adaptive_final = (X * signs_final) / self.weights_
+
+        # Stage 2
+        lasso_final = Lasso(
+            alpha=self.best_alpha_,
+            positive=True,
+            fit_intercept=self.fit_intercept,
+            max_iter=self.max_iter,
+            tol=self.tol,
+            random_state=self.random_state,
+        )
+        lasso_final.fit(X_adaptive_final, y)
+
+        coef_final = (lasso_final.coef_ / self.weights_) * signs_final
+
+        # 逆标准化
+        if self.standardize:
+            self.coef_ = coef_final / self.scaler_.scale_
+            if self.fit_intercept:
+                self.intercept_ = self.scaler_.mean_[0] - np.sum(self.coef_ * self.scaler_.mean_)
+        else:
+            self.coef_ = coef_final
+            if self.fit_intercept:
+                self.intercept_ = lasso_final.intercept_
+
+        self.is_fitted_ = True
+        return self
+
+    def score(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None) -> float:
+        """默认负 EBIC 评分"""
+        return self.ebic_score_
+

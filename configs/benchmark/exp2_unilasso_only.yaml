@@ -1,0 +1,32 @@
+# Benchmark Config - UniLassoCV only
+# =================================
+
+experiment: exp2_unilasso_only
+description: "Exp2 Benchmark - UniLassoCV only"
+algo: adaptive_flipped_lasso
+
+# Data generation parameters (Exp2: AR(1) correlation)
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: ar1
+rho: 0.8
+random_state: 42
+
+# Benchmark settings
+n_repeats: 5
+cv_folds: 1
+
+# SNR study settings
+search_space:
+  sigma: [0.1, 0.5, 1.0, 1.5, 2.0, 3.0]
+
+# Only UniLassoCV
+compare_models:
+  - algo: unilasso_cv
+    display: UniLassoCV
+    params: {}
+    cv: true
+
+# Output settings
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark

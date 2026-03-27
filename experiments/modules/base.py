@@ -144,6 +144,7 @@ class DataGenerator:
     - ar1: AR(1) autocorrelation structure
     - twin: Twin variables (pairs with opposite signs)
     - block: Block diagonal correlation structure
+    - experiment4: Opposite-sign twin variables with correlation (exp4 config)
     """
 
     random_state: int = 42
@@ -174,6 +175,8 @@ class DataGenerator:
             return self._generate_twin(n_samples, n_features, n_nonzero, sigma, family, rho)
         elif correlation_type == "block":
             return self._generate_block(n_samples, n_features, n_nonzero, sigma, family, block_size, n_blocks)
+        elif correlation_type == "experiment4":
+            return self._generate_experiment4(n_samples, n_features, sigma, family, rho)
         else:
             raise ValueError(f"Unknown correlation_type: {correlation_type}")
 
@@ -233,6 +236,30 @@ class DataGenerator:
         X = self.rng.multivariate_normal(np.zeros(p), cov, size=n)
         beta_true = np.zeros(p)
         beta_true[:k] = 1.0
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_experiment4(self, n, p, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 4 data: opposite-sign twin variables with correlation.
+
+        n=300, p=1000, 10 pairs twin variables with ρ=0.85
+        β_{2t-1}=2.0, β_{2t}=-2.5, remaining 980 variables are noise
+        """
+        X = self.rng.randn(n, p)
+        beta_true = np.zeros(p)
+
+        # Generate 10 pairs of twin variables with correlation rho
+        for i in range(10):
+            common = self.rng.randn(n)
+            X[:, 2*i] = common * np.sqrt(rho) + self.rng.randn(n) * np.sqrt(1-rho)
+            X[:, 2*i+1] = -common * np.sqrt(rho) + self.rng.randn(n) * np.sqrt(1-rho)
+            beta_true[2*i] = 2.0
+            beta_true[2*i+1] = -2.5
+
         if family == "gaussian":
             y = X @ beta_true + self.rng.randn(n) * sigma
         else:

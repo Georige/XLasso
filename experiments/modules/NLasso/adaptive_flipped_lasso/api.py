@@ -5,7 +5,7 @@ AdaptiveFlippedLasso API 层
 import numpy as np
 from sklearn.model_selection import KFold
 from sklearn.utils.validation import check_is_fitted
-from .base import BaseAdaptiveFlippedLasso, AdaptiveFlippedLassoRegressor, AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV
+from .base import BaseAdaptiveFlippedLasso, AdaptiveFlippedLassoRegressor, AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV, AdaptiveFlippedLassoEBIC
 
 
 class AdaptiveFlippedLasso(AdaptiveFlippedLassoRegressor):
@@ -77,6 +77,42 @@ class AdaptiveFlippedLassoClassifierCV(AdaptiveFlippedLassoClassifier, AdaptiveF
 
         if len(self.classes_) != 2:
             raise ValueError("AdaptiveFlippedLassoClassifierCV only supports binary classification")
+
+        y_continuous = (y == self.classes_[1]).astype(np.float64)
+
+        # 显式调用 AdaptiveFlippedLassoCV.fit() 以获得 1-SE CV 逻辑
+        # （不能走 super()，因为 MRO 会先到 BaseAdaptiveFlippedLasso）
+        return AdaptiveFlippedLassoCV.fit(self, X, y_continuous, sample_weight)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        check_is_fitted(self, 'is_fitted_')
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        check_is_fitted(self, 'is_fitted_')
+        z = X @ self.coef_ + self.intercept_
+        proba_1 = 1 / (1 + np.exp(-np.clip(z, -30, 30)))
+        return np.column_stack([1 - proba_1, proba_1])
+
+    def score(self, X: np.ndarray, y: np.ndarray) -> float:
+        from sklearn.metrics import accuracy_score
+        return accuracy_score(y, self.predict(X))
+
+
+class AdaptiveFlippedLassoClassifierEBIC(AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoEBIC):
+    """
+    带 EBIC 参数选择的 AdaptiveFlippedLasso 分类器（二分类）
+    """
+
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
+        from sklearn.utils.validation import check_X_y
+
+        X, y = check_X_y(X, y, accept_sparse=['csr', 'csc'], ensure_2d=True)
+        self.n_features_in_ = X.shape[1]
+        self.classes_ = np.unique(y)
+
+        if len(self.classes_) != 2:
+            raise ValueError("AdaptiveFlippedLassoClassifierEBIC only supports binary classification")
 
         y_continuous = (y == self.classes_[1]).astype(np.float64)
 

@@ -1,0 +1,52 @@
+by_f1:
+  rank_1:
+    model: AdaptiveFlippedLasso
+    f1: 0.8861
+  rank_2:
+    model: LassoCV
+    f1: 0.5418
+  rank_3:
+    model: AdaptiveLassoCV
+    f1: 0.4738
+  rank_4:
+    model: GroupLassoCV
+    f1: 0.1235
+by_mse:
+  rank_1:
+    model: LassoCV
+    mse: 3.614
+  rank_2:
+    model: AdaptiveFlippedLasso
+    mse: 3.9721
+  rank_3:
+    model: AdaptiveLassoCV
+    mse: 65.4718
+  rank_4:
+    model: GroupLassoCV
+    mse: 65.5971
+by_fdr:
+  rank_1:
+    model: AdaptiveFlippedLasso
+    fdr: 0.1775
+  rank_2:
+    model: LassoCV
+    fdr: 0.6238
+  rank_3:
+    model: AdaptiveLassoCV
+    fdr: 0.667
+  rank_4:
+    model: GroupLassoCV
+    fdr: 0.9339
+by_tpr:
+  rank_1:
+    model: GroupLassoCV
+    tpr: 0.9943
+  rank_2:
+    model: LassoCV
+    tpr: 0.9937
+  rank_3:
+    model: AdaptiveLassoCV
+    tpr: 0.9777
+  rank_4:
+    model: AdaptiveFlippedLasso
+    tpr: 0.97

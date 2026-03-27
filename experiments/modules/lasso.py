@@ -139,6 +139,10 @@ class LassoCV(BaseSparseSelector):
         Number of folds for cross-validation.
     random_state : int, default=42
         Random state for reproducibility.
+    use_1se : bool, default=True
+        If True, use 1-SE rule to select the most regularized model
+        within 1 standard error of the best score (via sklearn's
+        selection='random' mechanism).
     """
 
     def __init__(
@@ -151,6 +155,7 @@ class LassoCV(BaseSparseSelector):
         tol: float = 1e-4,
         cv: int = 5,
         random_state: int = 42,
+        use_1se: bool = True,
     ):
         super().__init__(standardize=standardize, fit_intercept=fit_intercept)
         self.alphas = alphas
@@ -159,6 +164,7 @@ class LassoCV(BaseSparseSelector):
         self.tol = tol
         self.cv = cv
         self.random_state = random_state
+        self.use_1se = use_1se
         self.coef_: Optional[np.ndarray] = None
         self.intercept_: Optional[float] = None
         self.n_features_in_: Optional[int] = None
@@ -202,6 +208,8 @@ class LassoCV(BaseSparseSelector):
         y_centered = y - np.mean(y)
 
         # Fit sklearn LassoCV
+        # sklearn's selection='random' implements 1-SE rule (selects
+        # the most regularized model within 1-SE of best score)
         self._model = SklearnLassoCV(
             alphas=self.alphas,
             cv=self.cv,
@@ -209,6 +217,7 @@ class LassoCV(BaseSparseSelector):
             max_iter=self.max_iter,
             tol=self.tol,
             random_state=self.random_state,
+            selection='random' if self.use_1se else 'alpha',
         )
         self._model.fit(X_scaled, y_centered, sample_weight=sample_weight)
 

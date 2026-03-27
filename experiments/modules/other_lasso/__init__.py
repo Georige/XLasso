@@ -9,6 +9,8 @@ from .adaptive_lasso import AdaptiveLasso, AdaptiveLassoCV
 from .fused_lasso import FusedLasso, FusedLassoCV
 from .group_lasso import GroupLasso, GroupLassoCV
 from .adaptive_sparse_group_lasso import AdaptiveSparseGroupLasso, AdaptiveSparseGroupLassoCV
+from .elasticnet_1se import ElasticNet1SE, fit_elasticnet_1se
+from .relaxed_lasso_1se import RelaxedLassoCV1SE
 
 # skglm 高性能Lasso算法 (Numba JIT优化)
 # 使用方式:
@@ -28,6 +30,9 @@ __all__ = [
     'GroupLassoCV',
     'AdaptiveSparseGroupLasso',
     'AdaptiveSparseGroupLassoCV',
+    'ElasticNet1SE',
+    'fit_elasticnet_1se',
+    'RelaxedLassoCV1SE',
 ]
 
 __version__ = '1.0.0'

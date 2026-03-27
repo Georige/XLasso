@@ -1,0 +1,16 @@
+by_f1:
+  rank_1:
+    model: AFL-Fixed
+    f1: 0.8614
+by_mse:
+  rank_1:
+    model: AFL-Fixed
+    mse: 3.9592
+by_fdr:
+  rank_1:
+    model: AFL-Fixed
+    fdr: 0.2145
+by_tpr:
+  rank_1:
+    model: AFL-Fixed
+    tpr: 0.99

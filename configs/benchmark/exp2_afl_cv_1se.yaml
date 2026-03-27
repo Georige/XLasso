@@ -1,0 +1,37 @@
+# Benchmark Config - AdaptiveFlippedLasso CV with 1-SE Rule
+# =============================================================
+# Solution 1: The 1-SE Rule for reducing over-selection
+
+experiment: exp2_afl_cv_1se
+description: "Exp2 Benchmark - AFL CV with 1-SE Rule (sigma=0.1, 0.5)"
+algo: adaptive_flipped_lasso_cv
+
+# Data generation parameters (Exp2: AR(1) correlation)
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: ar1
+rho: 0.8
+random_state: 42
+
+# Benchmark settings
+n_repeats: 5
+cv_folds: 1  # Single train/test split for validation
+
+# SNR study settings - only sigma 0.1 and 0.5
+search_space:
+  sigma: [0.1, 0.5]
+
+# AdaptiveFlippedLassoCV with 1-SE rule (same search space as tuned)
+compare_models:
+  - algo: aflclassifier_cv
+    display: AFL-CV-1SE
+    params:
+      lambda_ridge_list: [0.5, 1.0, 2.0]
+      gamma_list: [0.3, 0.5, 0.7]
+      cv: 10
+      n_alpha: 30
+    cv: true
+
+# Output settings
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark

@@ -1,0 +1,52 @@
+by_f1:
+  rank_1:
+    model: AFL-CV-1SE
+    f1: 0.9934
+  rank_2:
+    model: UniLasso-CV
+    f1: 0.9895
+  rank_3:
+    model: AdaptiveLasso-CV
+    f1: 0.8047
+  rank_4:
+    model: Lasso-CV
+    f1: 0.7517
+by_mse:
+  rank_1:
+    model: Lasso-CV
+    mse: 3.1502
+  rank_2:
+    model: AFL-CV-1SE
+    mse: 3.3322
+  rank_3:
+    model: UniLasso-CV
+    mse: 4.7121
+  rank_4:
+    model: AdaptiveLasso-CV
+    mse: 102.7299
+by_fdr:
+  rank_1:
+    model: UniLasso-CV
+    fdr: 0.0088
+  rank_2:
+    model: AFL-CV-1SE
+    fdr: 0.0105
+  rank_3:
+    model: AdaptiveLasso-CV
+    fdr: 0.3056
+  rank_4:
+    model: Lasso-CV
+    fdr: 0.3839
+by_tpr:
+  rank_1:
+    model: Lasso-CV
+    tpr: 1.0
+  rank_2:
+    model: AdaptiveLasso-CV
+    tpr: 0.9997
+  rank_3:
+    model: AFL-CV-1SE
+    tpr: 0.9983
+  rank_4:
+    model: UniLasso-CV
+    tpr: 0.9917

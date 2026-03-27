@@ -183,7 +183,7 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
     def __init__(self, alphas=None, l1_ratios=[0.1, 0.5, 0.9], groups=None,
                  fit_intercept=True, standardize=True, max_iter=1000, tol=1e-4,
                  group_weights=None, gamma=1.0, family="gaussian", cv=5,
-                 scoring=None, n_jobs=None):
+                 scoring=None, n_jobs=None, use_1se=True):
         """
         初始化参数
         Parameters:
@@ -200,6 +200,7 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
             cv: 交叉验证折数
             scoring: 评价指标
             n_jobs: 并行作业数
+            use_1se: 是否使用1-SE规则选择更保守的模型（更稀疏），默认True
         """
         # 先传一个临时的l1_ratio=0.5，后面会在网格搜索中替换
         super().__init__(
@@ -212,6 +213,7 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
         self.cv = cv
         self.scoring = scoring
         self.n_jobs = n_jobs
+        self.use_1se = use_1se
 
     def fit(self, X, y, sample_weight=None):
         """
@@ -222,6 +224,10 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
         from sklearn.preprocessing import StandardScaler
 
         X, y = check_X_y(X, y)
+
+        # 保存用于后续 1-SE 计算
+        self._X_for_cv = X
+        self._y_for_cv = y
 
         # 如果groups为None，自动分组
         if self.groups is None:
@@ -278,16 +284,96 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
         self.alpha = self.best_params_['alpha']
         self.l1_ratio = self.best_params_['l1_ratio']
 
-        # 复制最优模型的属性
-        best_model = grid.best_estimator_
-        self.coef_ = best_model.coef_
-        self.intercept_ = best_model.intercept_
-        self.feature_weights = best_model.feature_weights
-        self.beta_initial_ = best_model.beta_initial_
-        self.group_indices_ = best_model.group_indices_
-        self.n_groups_ = best_model.n_groups_
-        self.n_features_in_ = best_model.n_features_in_
-        self.scaler_X = best_model.scaler_X
-        self.scaler_y = best_model.scaler_y
+        # 1-SE 规则：选择最稀疏的模型，其分数在 best - 1*std 范围内
+        if self.use_1se:
+            best_alpha_1se, best_l1_ratio_1se = self._select_1se_params()
+            if hasattr(self, 'verbose') and self.verbose:
+                print(f"[AdaptiveSparseGroupLassoCV] Best (alpha, l1_ratio): ({self.alpha:.6f}, {self.l1_ratio})")
+                print(f"[AdaptiveSparseGroupLassoCV] 1-SE (alpha, l1_ratio): ({best_alpha_1se:.6f}, {best_l1_ratio_1se})")
+            self.alpha = best_alpha_1se
+            self.l1_ratio = best_l1_ratio_1se
+            # 重新拟合最终模型
+            final_model = AdaptiveSparseGroupLasso(
+                alpha=self.alpha, l1_ratio=self.l1_ratio, groups=self.groups,
+                fit_intercept=self.fit_intercept, standardize=self.standardize,
+                max_iter=self.max_iter, tol=self.tol,
+                group_weights=self.group_weights, gamma=self.gamma, family=self.family
+            )
+            final_model.fit(X, y, sample_weight=sample_weight)
+            self.coef_ = final_model.coef_
+            self.intercept_ = final_model.intercept_
+            self.feature_weights = final_model.feature_weights
+            self.beta_initial_ = final_model.beta_initial_
+            self.group_indices_ = final_model.group_indices_
+            self.n_groups_ = final_model.n_groups_
+            self.n_features_in_ = final_model.n_features_in_
+            self.scaler_X = final_model.scaler_X
+            self.scaler_y = final_model.scaler_y
+        else:
+            # 复制最优模型的属性
+            best_model = grid.best_estimator_
+            self.coef_ = best_model.coef_
+            self.intercept_ = best_model.intercept_
+            self.feature_weights = best_model.feature_weights
+            self.beta_initial_ = best_model.beta_initial_
+            self.group_indices_ = best_model.group_indices_
+            self.n_groups_ = best_model.n_groups_
+            self.n_features_in_ = best_model.n_features_in_
+            self.scaler_X = best_model.scaler_X
+            self.scaler_y = best_model.scaler_y
 
         return self
+
+    def _select_1se_params(self):
+        """
+        1-SE 规则：选择最简洁的模型，其分数在 best - 1*SE 范围内
+
+        在候选中选择非零系数数量最少的（最稀疏的）
+
+        Returns:
+            tuple: (best_alpha_1se, best_l1_ratio_1se)
+        """
+        cv_results = self.cv_results_
+        mean_score = cv_results['mean_test_score']
+        std_score = cv_results['std_test_score']
+        alphas = cv_results['param_alpha']
+        l1_ratios = cv_results['param_l1_ratio']
+
+        # 找出最佳分数
+        best_score = np.max(mean_score)
+
+        # 严格使用标准误 SE = std / sqrt(K)
+        K = self.cv
+        se_score = std_score / np.sqrt(K)
+
+        # 计算阈值：best_score - 1*SE (score 越大越好，所以用减号)
+        threshold = best_score - se_score
+
+        # 找出所有通过 1-SE 检验的候选
+        candidates_mask = mean_score >= threshold
+        candidate_indices = np.where(candidates_mask)[0]
+
+        if len(candidate_indices) == 0:
+            return self.best_params_['alpha'], self.best_params_['l1_ratio']
+
+        # 计算每个候选的非零系数数量，选择最稀疏的
+        n_nonzero_list = []
+        for idx in candidate_indices:
+            alpha = alphas[idx]
+            l1_ratio = l1_ratios[idx]
+            # 临时创建模型获取系数
+            model = AdaptiveSparseGroupLasso(
+                alpha=alpha, l1_ratio=l1_ratio,
+                groups=self.groups,
+                fit_intercept=self.fit_intercept, standardize=self.standardize,
+                max_iter=self.max_iter, tol=self.tol,
+                group_weights=self.group_weights, gamma=self.gamma,
+                family=self.family
+            )
+            model.fit(self._X_for_cv, self._y_for_cv)
+            n_nonzero = np.sum(np.abs(model.coef_) > 1e-6)
+            n_nonzero_list.append(n_nonzero)
+
+        # 选择非零系数最少的（最稀疏的）
+        best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
+        return alphas[best_candidate_idx], l1_ratios[best_candidate_idx]

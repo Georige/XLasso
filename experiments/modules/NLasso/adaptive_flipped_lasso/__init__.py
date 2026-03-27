@@ -5,10 +5,13 @@ AdaptiveFlippedLasso: 数据翻转 + 归一化权重 + 非负 Lasso
 
 __version__ = "1.0.0"
 
-from .api import AdaptiveFlippedLasso, AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV
+from .api import AdaptiveFlippedLasso, AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV, AdaptiveFlippedLassoClassifierEBIC
+from .base import AdaptiveFlippedLassoEBIC
 
 __all__ = [
     'AdaptiveFlippedLasso',
     'AdaptiveFlippedLassoClassifier',
     'AdaptiveFlippedLassoCV',
+    'AdaptiveFlippedLassoClassifierEBIC',
+    'AdaptiveFlippedLassoEBIC',
 ]

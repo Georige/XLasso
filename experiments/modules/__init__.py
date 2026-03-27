@@ -41,7 +41,8 @@ from typing import Dict, Tuple, Optional
 from .NLasso import (
     NLasso, NLassoClassifier, NLassoCV, NLassoClassifierCV,
     AdaptiveFlippedLasso, AdaptiveFlippedLassoClassifier,
-    AdaptiveFlippedLassoCV,
+    AdaptiveFlippedLassoCV, AdaptiveFlippedLassoClassifierEBIC,
+    AdaptiveFlippedLassoEBIC,
 )
 from .NLasso import metrics as nlasso_metrics
 
@@ -162,7 +163,7 @@ class CrossValidator:
 class DataGenerator:
     """
     Unified data generator for sparse regression experiments.
-    Supports: pairwise, ar1, twin correlation structures.
+    Supports: pairwise, ar1, twin, block correlation structures.
     """
     random_state: int = 42
 
@@ -178,6 +179,8 @@ class DataGenerator:
         correlation_type: str = "pairwise",
         rho: float = 0.5,
         family: str = "gaussian",
+        block_size: int = 10,
+        n_blocks: int = 50,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Generate synthetic sparse regression data."""
         if correlation_type == "pairwise":
@@ -186,6 +189,10 @@ class DataGenerator:
             return self._generate_ar1(n_samples, n_features, n_nonzero, sigma, family, rho)
         elif correlation_type == "twin":
             return self._generate_twin(n_samples, n_features, n_nonzero, sigma, family, rho)
+        elif correlation_type == "block":
+            return self._generate_block(n_samples, n_features, n_nonzero, sigma, family, rho, block_size, n_blocks)
+        elif correlation_type == "experiment4":
+            return self._generate_experiment4(n_samples, n_features, sigma, family, rho)
         else:
             raise ValueError(f"Unknown correlation_type: {correlation_type}")
 
@@ -226,6 +233,49 @@ class DataGenerator:
         for i in range(k):
             beta_true[2 * i] = 2.0
             beta_true[2 * i + 1] = -2.5
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_block(self, n, p, k, sigma, family, rho, block_size, n_blocks) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate block diagonal correlation structure."""
+        cov = np.zeros((p, p))
+        for b in range(n_blocks):
+            start = b * block_size
+            end = min(start + block_size, p)
+            block_cov = np.full((end - start, end - start), rho)
+            np.fill_diagonal(block_cov, 1.0)
+            cov[start:end, start:end] = block_cov
+        X = self.rng.multivariate_normal(np.zeros(p), cov, size=n)
+        beta_true = np.zeros(p)
+        beta_true[:k] = 1.0
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_experiment4(self, n, p, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 4 data: opposite-sign twin variables with correlation.
+
+        n=300, p=1000, 10 pairs twin variables with ρ=0.85
+        β_{2t-1}=2.0, β_{2t}=-2.5, remaining 980 variables are noise
+        """
+        X = self.rng.randn(n, p)
+        beta_true = np.zeros(p)
+
+        # Generate 10 pairs of twin variables with correlation rho
+        for i in range(10):
+            common = self.rng.randn(n)
+            X[:, 2*i] = common * np.sqrt(rho) + self.rng.randn(n) * np.sqrt(1-rho)
+            X[:, 2*i+1] = -common * np.sqrt(rho) + self.rng.randn(n) * np.sqrt(1-rho)
+            beta_true[2*i] = 2.0
+            beta_true[2*i+1] = -2.5
+
         if family == "gaussian":
             y = X @ beta_true + self.rng.randn(n) * sigma
         else:
@@ -274,6 +324,7 @@ ALGO_REGISTRY = {
     "adaptive_flipped_lasso": AdaptiveFlippedLasso,
     "aflclassifier": AdaptiveFlippedLassoClassifier,
     "aflclassifier_cv": AdaptiveFlippedLassoCV,
+    "aflclassifier_ebic": AdaptiveFlippedLassoClassifierEBIC,
     # XLasso (fit_uni/cv_uni)
     "xlasso": XLasso,
     "xlasso_cv": XLassoCV,
@@ -303,6 +354,8 @@ __all__ = [
     "AdaptiveFlippedLasso",
     "AdaptiveFlippedLassoClassifier",
     "AdaptiveFlippedLassoCV",
+    "AdaptiveFlippedLassoClassifierEBIC",
+    "AdaptiveFlippedLassoEBIC",
     "nlasso_metrics",
     # Other Lasso variants
     "AdaptiveLasso",

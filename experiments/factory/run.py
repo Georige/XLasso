@@ -37,6 +37,8 @@ from experiments.modules import (
     AdaptiveFlippedLasso,
     AdaptiveFlippedLassoClassifier,
     AdaptiveFlippedLassoCV,
+    AdaptiveFlippedLassoEBIC,
+    AdaptiveFlippedLassoClassifierEBIC,
     AdaptiveLasso,
     AdaptiveLassoCV,
     FusedLasso,
@@ -53,6 +55,7 @@ from experiments.modules import (
     MetricCalculator,
     CrossValidator,
 )
+from experiments.modules.other_lasso import ElasticNet1SE, RelaxedLassoCV1SE
 
 
 # Algorithm registry with proper class references
@@ -64,8 +67,10 @@ ALGO_REGISTRY = {
     "nlclassifier_cv": NLassoClassifierCV,
     # AdaptiveFlippedLasso family
     "adaptive_flipped_lasso": AdaptiveFlippedLasso,
+    "adaptive_flipped_lasso_ebic": AdaptiveFlippedLassoEBIC,
     "aflclassifier": AdaptiveFlippedLassoClassifier,
     "aflclassifier_cv": AdaptiveFlippedLassoCV,
+    "aflclassifier_ebic": AdaptiveFlippedLassoClassifierEBIC,
     # Standard Lasso
     "lasso": Lasso,
     "lasso_cv": LassoCV,
@@ -81,6 +86,10 @@ ALGO_REGISTRY = {
     "group_lasso_cv": GroupLassoCV,
     "adaptive_sparse_group_lasso": AdaptiveSparseGroupLasso,
     "adaptive_sparse_group_lasso_cv": AdaptiveSparseGroupLassoCV,
+    # ElasticNet with 1-SE Rule
+    "elasticnet_1se": ElasticNet1SE,
+    # Relaxed Lasso with 1-SE Rule
+    "relaxed_lasso_1se": RelaxedLassoCV1SE,
 }
 
 
@@ -304,6 +313,24 @@ def get_algo_params(algo_name, config):
             "standardize": config.get("standardize", True),
             "fit_intercept": config.get("fit_intercept", True),
             "family": config.get("family", "gaussian"),
+        })
+    elif algo_name == "elasticnet_1se":
+        # ElasticNet with 1-SE Rule parameters
+        params.update({
+            "cv_folds": config.get("cv_folds", 5),
+            "l1_ratios": config.get("l1_ratios", [0.1, 0.5, 0.7, 0.9, 0.95, 0.99, 1.0]),
+            "max_iter": config.get("max_iter", 5000),
+            "random_state": config.get("random_state", 42),
+            "verbose": config.get("verbose", True),
+        })
+    elif algo_name == "relaxed_lasso_1se":
+        # Relaxed Lasso with 1-SE Rule parameters
+        params.update({
+            "cv": config.get("cv", 5),
+            "random_state": config.get("random_state", 42),
+            "eps": config.get("eps", 1e-3),
+            "n_alphas": config.get("n_alphas", 100),
+            "verbose": config.get("verbose", True),
         })
     else:
         # Default fallback

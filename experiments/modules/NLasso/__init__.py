@@ -13,6 +13,8 @@ from .adaptive_flipped_lasso import (
     AdaptiveFlippedLasso,
     AdaptiveFlippedLassoClassifier,
     AdaptiveFlippedLassoCV,
+    AdaptiveFlippedLassoClassifierEBIC,
+    AdaptiveFlippedLassoEBIC,
 )
 
 __all__ = [
@@ -25,6 +27,8 @@ __all__ = [
     'AdaptiveFlippedLasso',
     'AdaptiveFlippedLassoClassifier',
     'AdaptiveFlippedLassoCV',
+    'AdaptiveFlippedLassoClassifierEBIC',
+    'AdaptiveFlippedLassoEBIC',
     # Metrics
     'metrics'
 ]
