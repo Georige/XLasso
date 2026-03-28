@@ -191,10 +191,20 @@ class DataGenerator:
             return self._generate_twin(n_samples, n_features, n_nonzero, sigma, family, rho)
         elif correlation_type == "block":
             return self._generate_block(n_samples, n_features, n_nonzero, sigma, family, rho, block_size, n_blocks)
+        elif correlation_type == "experiment1":
+            return self._generate_experiment1(n_samples, n_features, n_nonzero, sigma, family, rho)
+        elif correlation_type == "experiment2":
+            return self._generate_experiment2(n_samples, n_features, n_nonzero, sigma, family, rho)
+        elif correlation_type == "experiment3":
+            return self._generate_experiment3(n_samples, n_features, sigma, family, rho)
         elif correlation_type == "experiment4":
             return self._generate_experiment4(n_samples, n_features, sigma, family, rho)
         elif correlation_type == "experiment5":
-            return self._generate_experiment5(n_samples, n_features, sigma, rho)
+            return self._generate_experiment5(n_samples, n_features, sigma, family, rho)
+        elif correlation_type == "experiment6":
+            return self._generate_experiment6(n_samples, n_features, sigma, family, rho)
+        elif correlation_type == "experiment7":
+            return self._generate_experiment7(n_samples, n_features, sigma, family, rho)
         else:
             raise ValueError(f"Unknown correlation_type: {correlation_type}")
 
@@ -261,6 +271,78 @@ class DataGenerator:
             y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
         return X, y, beta_true
 
+    def _generate_experiment1(self, n, p, k, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 1 data: pairwise correlation, first k vars β=1.0.
+
+        n=300, p=500, X~N(0,Σ) with Σ_ij=rho
+        first k variables β=1.0, remaining p-k variables β=0
+        """
+        cov = np.full((p, p), rho)
+        np.fill_diagonal(cov, 1.0)
+        X = self.rng.multivariate_normal(np.zeros(p), cov, size=n)
+        beta_true = np.zeros(p)
+        beta_true[:k] = 1.0
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_experiment2(self, n, p, k, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 2 data: AR(1) correlation, odd-indexed first k vars β=1.0.
+
+        n=300, p=500, X~N(0,Σ) with Σ_ij=rho^|i-j|
+        odd-indexed first k variables β=1.0 (j=1,3,5,...,39)
+        """
+        cov = np.zeros((p, p))
+        for i in range(p):
+            for j in range(p):
+                cov[i, j] = rho ** abs(i - j)
+        X = self.rng.multivariate_normal(np.zeros(p), cov, size=n)
+        beta_true = np.zeros(p)
+        beta_true[1 : 2 * k : 2] = 1.0
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_experiment3(self, n, p, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 3 data: binomial with offset, AR(1) correlation.
+
+        n=300, p=500, X~N(0,Σ) with AR(1) ρ=0.8
+        first 20 variables β=1.0
+        y=1 samples have offset 0.6 on first 20 variables, ~150 each class
+        """
+        k = 20
+        cov = np.zeros((p, p))
+        for i in range(p):
+            for j in range(p):
+                cov[i, j] = rho ** abs(i - j)
+        X = self.rng.multivariate_normal(np.zeros(p), cov, size=n)
+        beta_true = np.zeros(p)
+        beta_true[:k] = 1.0
+
+        if family == "binomial":
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+            # Ensure class balance: ~150 each
+            y1_idx = y == 1
+            if np.sum(y1_idx) > 160:
+                drop_idx = self.rng.choice(np.where(y1_idx)[0], int(np.sum(y1_idx) - 150), replace=False)
+                y[drop_idx] = 0
+            elif np.sum(y1_idx) < 140:
+                add_idx = self.rng.choice(np.where(y == 0)[0], int(150 - np.sum(y1_idx)), replace=False)
+                y[add_idx] = 1
+            # Offset 0.6 on y=1 samples
+            y1_idx = y == 1
+            X[y1_idx, :k] += 0.6
+        else:
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        return X, y, beta_true
+
     def _generate_experiment4(self, n, p, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Generate experiment 4 data: opposite-sign twin variables with correlation.
 
@@ -285,7 +367,7 @@ class DataGenerator:
             y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
         return X, y, beta_true
 
-    def _generate_experiment5(self, n, p, sigma, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _generate_experiment5(self, n, p, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Generate experiment 5 data: Perfect Masking (Absolute Invisible Trap).
 
         n=300, p=1000, 10 pairs twin variables with ρ=0.8
@@ -323,7 +405,74 @@ class DataGenerator:
             X[:, 2*i] = v1_ortho * np.std(X[:, 2*i]) + np.mean(X[:, 2*i])
             X[:, 2*i+1] = v2_ortho * np.std(X[:, 2*i+1]) + np.mean(X[:, 2*i+1])
 
-        y = X @ beta_true + self.rng.randn(n) * sigma
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_experiment6(self, n, p, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 6 data: The Decoy Trap.
+
+        n=300, p=500, 5 groups of 3 variables each
+        True signal: first 2 vars in each group β=1.0
+        Noise decoy: 3rd var in each group, correlated with group signals (ρ=0.8)
+        Remaining 482 vars are independent noise β=0
+        """
+        X = self.rng.randn(n, p)
+        beta_true = np.zeros(p)
+
+        # 5 groups of 3 variables
+        groups = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (12, 13, 14), (15, 16, 17)]
+
+        for a, b, c in groups:
+            # a,b are true signals (independent), c is noise decoy (correlated with a,b)
+            common_ab = self.rng.randn(n) * np.sqrt(0.5)
+            indep_a = self.rng.randn(n) * np.sqrt(0.5)
+            indep_b = self.rng.randn(n) * np.sqrt(0.5)
+            indep_c = self.rng.randn(n) * np.sqrt(1 - rho)
+
+            X[:, a] = common_ab + indep_a
+            X[:, b] = common_ab + indep_b
+            # c correlated with a,b at level rho
+            common_ac = self.rng.randn(n) * np.sqrt(rho)
+            X[:, c] = common_ac + indep_c
+
+            beta_true[a] = 1.0
+            beta_true[b] = 1.0
+            # beta_true[c] = 0 (remains 0)
+
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
+        return X, y, beta_true
+
+    def _generate_experiment7(self, n, p, sigma, family, rho) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate experiment 7 data: AR(1) Sign Avalanche.
+
+        n=300, p=500, first 20 variables AR(1) chain Σ_ij=0.9^|i-j|
+        β_j = (-1)^(j+1) * 2.0 * 0.9^((j-1)/2), j=1..20
+        e.g. β1=2.0, β2=-1.8, β3=1.62, β4=-1.458, ...
+        Remaining 480 vars β=0
+        """
+        cov = np.zeros((p, p))
+        for i in range(p):
+            for j in range(p):
+                cov[i, j] = rho ** abs(i - j)
+        X = self.rng.multivariate_normal(np.zeros(p), cov, size=n)
+
+        beta_true = np.zeros(p)
+        for j in range(1, 21):
+            beta_true[j-1] = ((-1) ** (j + 1)) * 2.0 * (0.9 ** ((j - 1) / 2))
+
+        if family == "gaussian":
+            y = X @ beta_true + self.rng.randn(n) * sigma
+        else:
+            z = X @ beta_true + self.rng.randn(n) * sigma
+            y = (1 / (1 + np.exp(-z)) >= 0.5).astype(int)
         return X, y, beta_true
 
 
