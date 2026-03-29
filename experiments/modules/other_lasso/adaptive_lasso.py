@@ -18,7 +18,7 @@ class AdaptiveLasso(BaseLasso):
     参考标准实现: https://github.com/ErikHartman/adalasso
     """
     def __init__(self, alpha=1.0, gamma=1.0, fit_intercept=True, standardize=True,
-                 max_iter=1000, tol=1e-4, method='lasso', family="gaussian",
+                 max_iter=5000, tol=1e-4, method='lasso', family="gaussian",
                  initial_estimator=None):
         """
         初始化参数
@@ -138,7 +138,7 @@ class AdaptiveLassoCV(AdaptiveLasso):
     带交叉验证的自适应Lasso，自动选择最优alpha和gamma参数
     """
     def __init__(self, alphas=None, gammas=[1.0, 2.0], fit_intercept=True,
-                 standardize=True, max_iter=1000, tol=1e-4, method='lasso',
+                 standardize=True, max_iter=5000, tol=1e-4, method='lasso',
                  family="gaussian", initial_estimator=None, cv=5,
                  scoring=None, n_jobs=None, use_1se=True):
         """

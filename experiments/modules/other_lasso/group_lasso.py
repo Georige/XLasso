@@ -19,7 +19,7 @@ class GroupLasso(BaseLasso):
     对特征组施加L2范数惩罚，实现组级稀疏性
     """
     def __init__(self, alpha=1.0, groups=None, fit_intercept=True, standardize=True,
-                 max_iter=1000, tol=1e-4, group_weights=None, family="gaussian"):
+                 max_iter=5000, tol=1e-4, group_weights=None, family="gaussian"):
         """
         初始化参数
         Parameters:
@@ -199,7 +199,7 @@ class GroupLassoCV(GroupLasso):
     带交叉验证的组Lasso，自动选择最优alpha参数
     """
     def __init__(self, alphas=None, groups=None, fit_intercept=True, standardize=True,
-                 max_iter=1000, tol=1e-4, group_weights=None, family="gaussian",
+                 max_iter=5000, tol=1e-4, group_weights=None, family="gaussian",
                  cv=5, scoring=None, n_jobs=None, use_1se=True):
         """
         初始化参数

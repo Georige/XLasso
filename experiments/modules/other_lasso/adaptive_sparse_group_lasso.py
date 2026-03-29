@@ -25,7 +25,7 @@ class AdaptiveSparseGroupLasso(BaseLasso):
     - Adaptive Sparse Group Lasso 论文实现
     """
     def __init__(self, alpha=1.0, l1_ratio=0.5, groups=None, fit_intercept=True,
-                 standardize=True, max_iter=1000, tol=1e-4, group_weights=None,
+                 standardize=True, max_iter=5000, tol=1e-4, group_weights=None,
                  feature_weights=None, gamma=1.0, family="gaussian"):
         """
         初始化参数
@@ -181,7 +181,7 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
     带交叉验证的自适应稀疏组Lasso，自动选择最优alpha和l1_ratio参数
     """
     def __init__(self, alphas=None, l1_ratios=[0.1, 0.5, 0.9], groups=None,
-                 fit_intercept=True, standardize=True, max_iter=1000, tol=1e-4,
+                 fit_intercept=True, standardize=True, max_iter=5000, tol=1e-4,
                  group_weights=None, gamma=1.0, family="gaussian", cv=5,
                  scoring=None, n_jobs=None, use_1se=True):
         """

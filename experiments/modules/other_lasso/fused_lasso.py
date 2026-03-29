@@ -22,7 +22,7 @@ class FusedLasso(BaseLasso):
     参考标准实现: https://github.com/jaredhuling/fusedlasso
     """
     def __init__(self, alpha=1.0, lambda_fused=None, fit_intercept=True, standardize=True,
-                 max_iter=1000, tol=1e-4, family="gaussian", D=None):
+                 max_iter=5000, tol=1e-4, family="gaussian", D=None):
         """
         初始化参数
         Parameters:
@@ -159,7 +159,7 @@ class FusedLassoCV(FusedLasso):
     带交叉验证的融合Lasso，自动选择最优alpha和lambda_fused参数
     """
     def __init__(self, alphas=None, lambda_fused_ratios=[0.1, 0.5, 1.0, 2.0, 5.0],
-                 fit_intercept=True, standardize=True, max_iter=1000, tol=1e-4,
+                 fit_intercept=True, standardize=True, max_iter=5000, tol=1e-4,
                  family="gaussian", D=None, cv=5, scoring=None, n_jobs=None):
         """
         初始化参数

@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 
 class BaseLasso(BaseEstimator):
     """Lasso算法基类"""
-    def __init__(self, alpha=1.0, fit_intercept=True, standardize=True, max_iter=1000, tol=1e-4, family="gaussian"):
+    def __init__(self, alpha=1.0, fit_intercept=True, standardize=True, max_iter=5000, tol=1e-4, family="gaussian"):
         """
         初始化参数
         Parameters:
