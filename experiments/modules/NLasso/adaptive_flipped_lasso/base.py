@@ -585,12 +585,10 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.best_gamma_ = self.gamma_list[best_gamma_idx]
 
         # 重建该 gamma 对应的 alpha 路径（用于取 best_alpha）
-        # 注意：Stage 2 仅用于选择 best_alpha，不涉及验证所以可用全量数据
         if self.standardize:
             X_for_stage2 = self.scaler_.fit_transform(X)
         else:
             X_for_stage2 = X
-
         ridge_cv_tmp = RidgeCV(alphas=self.lambda_ridge_list, cv=3)
         ridge_cv_tmp.fit(X_for_stage2, y)
         beta_ridge_tmp = ridge_cv_tmp.coef_
@@ -604,6 +602,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         alpha_min_tmp = alpha_max_tmp * self.alpha_min_ratio
         alphas_final = np.logspace(np.log10(alpha_min_tmp), np.log10(alpha_max_tmp), self.n_alpha)[::-1]
         self.best_alpha_ = alphas_final[best_alpha_idx]
+
         best_cv_mse = mean_error[best_gamma_idx, best_alpha_idx]
         best_cv_nselected = mean_nselected[best_gamma_idx, best_alpha_idx]
         self.cv_score_ = -best_cv_mse
@@ -618,7 +617,6 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         # ============================================================
         # 阶段三：全量数据终极拟合
         # ============================================================
-        # 用全量数据 fit scaler（阶段一/二的 CV 中已避免泄露，此处可接受）
         if self.standardize:
             X_for_cv = self.scaler_.fit_transform(X)
         else:
@@ -966,3 +964,317 @@ class AdaptiveFlippedLassoEBIC(BaseAdaptiveFlippedLasso, RegressorMixin):
         """默认负 EBIC 评分"""
         return self.ebic_score_
 
+
+class AdaptiveFlippedLassoCV_UnifiedPrior(BaseAdaptiveFlippedLasso, RegressorMixin):
+    """
+    AdaptiveFlippedLassoCV with Unified Prior (统一先验版)
+
+    与标准 AdaptiveFlippedLassoCV 的区别：
+    - Stage 1 中，beta_ridge 和 weights 基于全部训练数据提取一次
+    - 各 fold 只承担验证职责，使用统一的 weights 和 alpha 路径
+    - Stage 2 中所有 fold 共享同一个 alpha 索引，平均 MSE 有物理意义
+
+    算法流程：
+    阶段一：统一先验 + K 折验证
+        - RidgeCV(全部训练数据) → beta_ridge_all (统一先验)
+        - 对每个 gamma：计算 weights_all + 统一 alpha 路径
+        - for each fold k:
+            用统一 weights 变换 fold 数据
+            lasso_path(训练折) → 全部 alpha 的系数路径
+            在验证折上打分 → Error_Matrix[gamma, alpha, k]
+    阶段二：选拔最优参数（平均 MSE 最小的 gamma, alpha）
+    阶段三：全量数据终极拟合（带回最佳参数）
+    """
+
+    def __init__(
+        self,
+        lambda_ridge_list: tuple = (0.1, 1.0, 10.0, 100.0),
+        gamma_list: tuple = (0.5, 1.0, 2.0),
+        cv: int = 5,
+        alpha_min_ratio: float = 1e-4,
+        n_alpha: int = 100,
+        max_iter: int = 1000,
+        tol: float = 1e-4,
+        standardize: bool = False,
+        fit_intercept: bool = True,
+        random_state: int = 2026,
+        verbose: bool = False,
+        use_post_ols_debiasing: bool = False,
+        auto_tune_collinearity: bool = True,
+        weight_clip_max: float = 100.0,
+    ):
+        self.lambda_ridge_list = lambda_ridge_list
+        self.gamma_list = gamma_list
+        self.cv = cv
+        self.alpha_min_ratio = alpha_min_ratio
+        self.n_alpha = n_alpha
+        self.max_iter = max_iter
+        self.tol = tol
+        self.standardize = standardize
+        self.fit_intercept = fit_intercept
+        self.random_state = random_state
+        self.verbose = verbose
+        self.use_post_ols_debiasing = use_post_ols_debiasing
+        self.auto_tune_collinearity = auto_tune_collinearity
+        self.weight_clip_max = weight_clip_max
+
+        self._init_fitted_attributes()
+
+    def get_params(self, deep: bool = True) -> dict:
+        params = {
+            'lambda_ridge_list': self.lambda_ridge_list,
+            'gamma_list': self.gamma_list,
+            'cv': self.cv,
+            'alpha_min_ratio': self.alpha_min_ratio,
+            'n_alpha': self.n_alpha,
+            'max_iter': self.max_iter,
+            'tol': self.tol,
+            'standardize': self.standardize,
+            'fit_intercept': self.fit_intercept,
+            'random_state': self.random_state,
+            'verbose': self.verbose,
+            'use_post_ols_debiasing': self.use_post_ols_debiasing,
+            'auto_tune_collinearity': self.auto_tune_collinearity,
+            'weight_clip_max': self.weight_clip_max,
+        }
+        return params
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            if key in self.get_params():
+                setattr(self, key, value)
+            else:
+                raise ValueError(f"Invalid parameter '{key}' for estimator {self.__class__.__name__}")
+        return self
+
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
+        """
+        拟合 AdaptiveFlippedLassoCV_UnifiedPrior 模型
+
+        核心改进：先验提取基于全部训练数据，各 fold 只做验证
+        """
+        from sklearn.model_selection import KFold
+        from sklearn.metrics import mean_squared_error
+
+        X, y = check_X_y(
+            X, y,
+            accept_sparse=['csr', 'csc'],
+            dtype=_DTYPE,
+            copy=_COPY_WHEN_POSSIBLE,
+            ensure_2d=True,
+            ensure_min_samples=2,
+            ensure_min_features=2
+        )
+        self.n_features_in_ = X.shape[1]
+
+        # Auto-detect collinearity mode if enabled
+        if self.auto_tune_collinearity:
+            data_mode, energy_ratio = _detect_collinearity_mode(X)
+            if self.verbose:
+                print(f"[ADL-Unified] Detected mode: {data_mode} (energy_ratio={energy_ratio:.3f})")
+
+            if data_mode == "dense_collinear":
+                self.gamma_list = (1.0, 2.0, 3.0)
+            else:
+                self.gamma_list = (0.3, 0.5, 1.0)
+
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight, dtype=_DTYPE)
+
+        # 标准化
+        if self.standardize:
+            self.scaler_ = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
+            self.scaler_._fitted = False
+        else:
+            self.scaler_ = None
+
+        n = X.shape[0]
+        n_gamma = len(self.gamma_list)
+        eps = 1e-5
+
+        # ============================================================
+        # 阶段一（修改版）：统一先验提取 + K 折验证
+        # ============================================================
+        if cv_splits is not None:
+            n_folds = len(cv_splits)
+            splits = cv_splits
+            if self.verbose:
+                print(f"[ADL-Unified] Using provided {n_folds}-fold CV splits")
+        else:
+            n_folds = self.cv
+            kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
+            splits = list(kfold.split(X))
+
+        # ---- 统一先验提取：在 CV 循环之前，基于全部训练数据 ----
+        if self.standardize:
+            X_std = self.scaler_.fit_transform(X)
+        else:
+            X_std = X
+
+        ridge_cv = RidgeCV(alphas=self.lambda_ridge_list, cv=self.cv)
+        ridge_cv.fit(X_std, y)
+        beta_ridge_all = ridge_cv.coef_
+        best_lambda_ridge = ridge_cv.alpha_
+
+        signs_all = np.sign(beta_ridge_all)
+        signs_all[signs_all == 0] = 1.0
+
+        if self.verbose:
+            print(f"[ADL-Unified] Prior from ALL data: lambda_ridge={best_lambda_ridge:.4f}")
+            print(f"[ADL-Unified] beta_ridge range: [{np.min(beta_ridge_all):.4f}, {np.max(beta_ridge_all):.4f}]")
+
+        # 对每个 gamma 预计算：统一权重 + 统一 alpha 路径
+        weights_per_gamma = {}
+        for gamma_idx, gamma in enumerate(self.gamma_list):
+            raw_weights = 1.0 / (np.abs(beta_ridge_all) + eps) ** gamma
+            min_w = np.min(raw_weights)
+            w_normalized = raw_weights / min_w
+            clip_max = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+            weights = np.clip(w_normalized, 1.0, clip_max)
+
+            # 用全部训练数据计算 alpha_max，统一 alpha 路径
+            X_adaptive_all = (X_std * signs_all) / weights
+            alpha_max = np.max(np.abs(X_adaptive_all.T @ y)) / len(y)
+            alpha_min = alpha_max * self.alpha_min_ratio
+            alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
+            weights_per_gamma[gamma_idx] = (weights, alphas)
+
+            if self.verbose:
+                print(f"[ADL-Unified] gamma={gamma}: weight range [{np.min(weights):.4f}, {np.max(weights):.4f}], "
+                      f"alpha range [{alphas[-1]:.6f}, {alphas[0]:.4f}]")
+
+        # ---- K 折验证：使用统一先验在各 fold 上验证 ----
+        error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
+        nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
+
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
+            X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
+            y_tr, y_va = y[train_idx], y[val_idx]
+
+            # 每个 fold 独立标准化
+            if self.standardize:
+                scaler_fold = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
+                X_tr = scaler_fold.fit_transform(X_tr_raw)
+                X_va = scaler_fold.transform(X_va_raw)
+            else:
+                X_tr, X_va = X_tr_raw, X_va_raw
+
+            if self.verbose:
+                print(f"[Fold {fold_idx + 1}/{n_folds}] train={len(train_idx)}, val={len(val_idx)}")
+
+            # 对每个 gamma：用统一先验在 fold 上验证
+            for gamma_idx, gamma in enumerate(self.gamma_list):
+                weights, alphas = weights_per_gamma[gamma_idx]
+
+                # 空间重构：用统一的 signs 和 weights 变换 fold 数据
+                X_adaptive_tr = (X_tr * signs_all) / weights
+                X_adaptive_va = (X_va * signs_all) / weights
+
+                # lasso_path：基于统一 alpha 路径
+                _, coefs_path, _ = lasso_path(
+                    X_adaptive_tr, y_tr,
+                    alphas=alphas,
+                    positive=True,
+                    max_iter=self.max_iter,
+                    tol=self.tol,
+                )
+
+                # 在验证集上打分
+                preds = X_adaptive_va @ coefs_path  # (n_val, n_alphas)
+                mse_path = np.mean((y_va[:, np.newaxis] - preds) ** 2, axis=0)
+                error_matrix[gamma_idx, :, fold_idx] = mse_path
+
+                # 追踪非零系数数量
+                nselected_path = np.sum(coefs_path != 0, axis=0)
+                nselected_matrix[gamma_idx, :, fold_idx] = nselected_path
+
+        # ============================================================
+        # 阶段二：选拔最优参数（1-SE 法则）
+        # ============================================================
+        mean_error = np.mean(error_matrix, axis=2)
+        std_error = np.std(error_matrix, axis=2) / np.sqrt(n_folds)
+        mean_nselected = np.mean(nselected_matrix, axis=2)
+
+        min_mse = np.min(mean_error)
+        min_mse_idx = np.unravel_index(np.argmin(mean_error), mean_error.shape)
+        min_std = std_error[min_mse_idx]
+        threshold = min_mse + min_std
+
+        candidates_mask = mean_error <= threshold
+
+        if not np.any(candidates_mask):
+            if self.verbose:
+                print("[Stage 2] Warning: No candidates within 1-SE, using standard min-MSE")
+            best_gamma_idx, best_alpha_idx = np.unravel_index(
+                np.argmin(mean_error), mean_error.shape
+            )
+        else:
+            masked_nselected = np.where(candidates_mask, mean_nselected, np.inf)
+            best_flat_idx = np.argmin(masked_nselected)
+            best_gamma_idx, best_alpha_idx = np.unravel_index(best_flat_idx, mean_error.shape)
+
+        # High-dimensional fallback
+        n_samples = X.shape[0]
+        n_features = X.shape[1]
+        if n_features > n_samples * 2:
+            if self.verbose:
+                print("[Stage 2] High-dimensional data detected, using min MSE instead of 1-SE")
+            best_gamma_idx, best_alpha_idx = np.unravel_index(
+                np.argmin(mean_error), mean_error.shape
+            )
+
+        self.best_gamma_ = self.gamma_list[best_gamma_idx]
+        best_gamma_weights, best_gamma_alphas = weights_per_gamma[best_gamma_idx]
+        self.best_alpha_ = best_gamma_alphas[best_alpha_idx]
+        best_cv_mse = mean_error[best_gamma_idx, best_alpha_idx]
+        best_cv_nselected = mean_nselected[best_gamma_idx, best_alpha_idx]
+        self.cv_score_ = -best_cv_mse
+
+        if self.verbose:
+            print(f"\n[Stage 2] 1-SE Rule:")
+            print(f"  min_MSE={min_mse:.6f}, threshold={threshold:.6f}")
+            print(f"  n_candidates={np.sum(candidates_mask)}")
+            print(f"  selected: gamma={self.best_gamma_}, alpha={self.best_alpha_:.6f}")
+            print(f"  selected: CV_MSE={best_cv_mse:.6f}, n_selected≈{best_cv_nselected:.1f}")
+
+        # ============================================================
+        # 阶段三：全量数据终极拟合
+        # ============================================================
+        self.beta_ridge_ = beta_ridge_all
+        self.best_lambda_ridge_ = best_lambda_ridge
+        self.signs_ = signs_all
+        self.weights_ = best_gamma_weights
+
+        X_adaptive_final = (X_std * signs_all) / self.weights_
+
+        lasso_final = Lasso(
+            alpha=self.best_alpha_,
+            positive=True,
+            fit_intercept=self.fit_intercept,
+            max_iter=self.max_iter,
+            tol=self.tol,
+            random_state=self.random_state,
+        )
+        lasso_final.fit(X_adaptive_final, y)
+
+        coef_final = (lasso_final.coef_ / self.weights_) * signs_all
+
+        # 逆标准化到原始空间
+        if self.standardize:
+            self.coef_ = coef_final / self.scaler_.scale_
+            if self.fit_intercept:
+                self.intercept_ = self.scaler_.mean_[0] - np.sum(self.coef_ * self.scaler_.mean_)
+        else:
+            self.coef_ = coef_final
+            if self.fit_intercept:
+                self.intercept_ = lasso_final.intercept_
+
+        self.is_fitted_ = True
+        return self
+
+    def score(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None) -> float:
+        """默认负 MSE 评分"""
+        from sklearn.metrics import mean_squared_error
+        y_pred = self.predict(X)
+        return -mean_squared_error(y, y_pred, sample_weight=sample_weight)

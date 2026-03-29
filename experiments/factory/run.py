@@ -275,6 +275,9 @@ def get_algo_params(algo_name, config):
         # AdaptiveLasso parameters (sklearn-compatible)
         params.update({
             "alpha": config.get("lambda_", 0.01),
+            "gammas": config.get("adaptive_lasso_gammas", [0.5, 1.0, 2.0]),
+            "alpha_min_ratio": config.get("adaptive_lasso_alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("adaptive_lasso_n_alpha", 100),
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
         })

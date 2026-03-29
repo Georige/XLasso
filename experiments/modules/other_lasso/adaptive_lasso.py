@@ -10,6 +10,7 @@ from sklearn.model_selection import check_cv
 from sklearn.base import clone
 from .base import BaseLasso
 
+
 class AdaptiveLasso(BaseLasso):
     """
     自适应Lasso回归/分类
@@ -136,11 +137,14 @@ class AdaptiveLasso(BaseLasso):
 class AdaptiveLassoCV(AdaptiveLasso):
     """
     带交叉验证的自适应Lasso，自动选择最优alpha和gamma参数
+    严格隔离CV：每个fold独立计算初始估计和alpha搜索，避免验证集泄露
+
+    参考 Zou (2006) 的自适应Lasso oracle 性质实现
     """
     def __init__(self, alphas=None, gammas=[1.0, 2.0], fit_intercept=True,
                  standardize=True, max_iter=5000, tol=1e-4, method='lasso',
                  family="gaussian", initial_estimator=None, cv=5,
-                 scoring=None, n_jobs=None, use_1se=True):
+                 scoring=None, n_jobs=None, use_1se=True, alpha_min_ratio=1e-4):
         """
         初始化参数
         Parameters:
@@ -157,6 +161,7 @@ class AdaptiveLassoCV(AdaptiveLasso):
             scoring: 评价指标，默认：回归用neg_mean_squared_error，分类用roc_auc
             n_jobs: 并行作业数
             use_1se: 是否使用1-SE规则选择更保守的模型（更稀疏），默认True
+            alpha_min_ratio: alpha搜索最小值与最大值的比例
         """
         super().__init__(
             alpha=None, gamma=None, fit_intercept=fit_intercept,
@@ -169,10 +174,17 @@ class AdaptiveLassoCV(AdaptiveLasso):
         self.scoring = scoring
         self.n_jobs = n_jobs
         self.use_1se = use_1se
+        self.alpha_min_ratio = alpha_min_ratio
 
     def fit(self, X, y, sample_weight=None, cv_splits=None):
         """
-        用交叉验证拟合模型，选择最优参数
+        用交叉验证拟合模型，选择最优参数（严格隔离版）
+
+        每个fold独立计算：
+        1. 标准化统计量（仅用训练折）
+        2. 初始beta_ols（仅用训练折）
+        3. 自适应权重（仅用训练折系数）
+        4. alpha搜索路径（仅用训练折）
 
         Parameters
         ----------
@@ -185,181 +197,294 @@ class AdaptiveLassoCV(AdaptiveLasso):
         cv_splits : list of tuples, optional
             Pre-generated CV splits (list of (train_idx, val_idx) tuples).
             If provided, uses these splits instead of creating new KFold.
+            This ensures all algorithms use the same CV splits for fair comparison.
         """
-        from sklearn.model_selection import GridSearchCV
-        from sklearn.metrics import get_scorer
+        from sklearn.model_selection import KFold
+        from sklearn.metrics import mean_squared_error, roc_auc_score
 
         X, y = check_X_y(X, y)
-
-        # 保存用于后续 1-SE 计算
-        self._X_for_cv = X
-        self._y_for_cv = y
+        self.n_features_in_ = X.shape[1]
 
         # 默认评分指标
-        from sklearn.metrics import make_scorer, roc_auc_score, mean_squared_error
         if self.scoring is None:
             if self.family.lower() == "gaussian":
-                self.scoring = make_scorer(mean_squared_error, greater_is_better=False)
+                self.scoring = 'neg_mean_squared_error'
             else:
-                self.scoring = make_scorer(roc_auc_score, needs_proba=True)
+                self.scoring = 'roc_auc'
 
-        # 默认alpha搜索范围
+        # 使用提供的cv_splits或创建新的KFold
+        if cv_splits is not None:
+            n_folds = len(cv_splits)
+            splits = cv_splits
+        else:
+            n_folds = self.cv
+            kfold = KFold(n_splits=self.cv, shuffle=True, random_state=2026)
+            splits = list(kfold.split(X))
+
+        # 预分配结果矩阵
+        n_gamma = len(self.gammas)
         if self.alphas is None:
-            # 生成alpha搜索范围，和sklearn LassoCV保持一致
-            X_scaled = StandardScaler().fit_transform(X)
-            if self.family.lower() == "gaussian":
-                y_scaled = StandardScaler().fit_transform(y.reshape(-1,1)).flatten()
-                lambda_max = np.max(np.abs(X_scaled.T @ y_scaled)) / len(y)
-            else:
-                lambda_max = np.max(np.abs(X_scaled.T @ (y - np.mean(y)))) / len(y)
-            self.alphas = np.exp(np.linspace(np.log(lambda_max), np.log(lambda_max*1e-4), 100))
-
-        # 参数网格
-        param_grid = {
-            'alpha': self.alphas,
-            'gamma': self.gammas
-        }
-
-        # 预计算初始beta以避免重复Ridge fits
-        X_processed = self._preprocess(X, y)[0]
-        if self.initial_estimator is not None:
-            estimator = clone(self.initial_estimator)
-            estimator.fit(X_processed, y, sample_weight=sample_weight)
-            beta_ols = estimator.coef_.flatten()
+            n_alpha = 100
         else:
-            if self.family.lower() == "gaussian":
-                if X.shape[0] > X.shape[1]:
-                    ols = LinearRegression(fit_intercept=False)
-                    ols.fit(X_processed, y, sample_weight=sample_weight)
-                    beta_ols = ols.coef_
+            n_alpha = len(self.alphas)
+
+        error_matrix = np.full((n_gamma, n_alpha, n_folds), np.inf)
+        nselected_matrix = np.zeros((n_gamma, n_alpha, n_folds))
+
+        eps = 1e-10
+
+        # ============================================================
+        # 阶段一：K折严格内部寻优（严格隔离，无泄露）
+        # ============================================================
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
+            X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
+            y_tr, y_va = y[train_idx], y[val_idx]
+
+            # 每个fold独立标准化（仅用训练折fit，避免验证集泄露）
+            if self.standardize:
+                scaler_fold = StandardScaler()
+                X_tr = scaler_fold.fit_transform(X_tr_raw)
+                X_va = scaler_fold.transform(X_va_raw)
+            else:
+                X_tr, X_va = X_tr_raw, X_va_raw
+
+            # 处理样本权重
+            if sample_weight is not None:
+                sw_tr = np.asarray(sample_weight)[train_idx]
+            else:
+                sw_tr = None
+
+            # ---------------------------------------------------------
+            # 第一步：在训练折上计算初始beta_ols（严格隔离！）
+            # 关键：不能使用任何验证集的信息
+            # ---------------------------------------------------------
+            if self.initial_estimator is not None:
+                estimator = clone(self.initial_estimator)
+                estimator.fit(X_tr, y_tr, sample_weight=sw_tr)
+                beta_ols = estimator.coef_.flatten()
+            else:
+                if self.family.lower() == "gaussian":
+                    if X_tr.shape[0] > X_tr.shape[1]:
+                        ols = LinearRegression(fit_intercept=False)
+                        ols.fit(X_tr, y_tr, sample_weight=sw_tr)
+                        beta_ols = ols.coef_
+                    else:
+                        ridge = Ridge(alpha=0.1, fit_intercept=False, max_iter=self.max_iter)
+                        ridge.fit(X_tr, y_tr, sample_weight=sw_tr)
+                        beta_ols = ridge.coef_
                 else:
-                    ridge = Ridge(alpha=0.1, fit_intercept=False, max_iter=self.max_iter)
-                    ridge.fit(X_processed, y, sample_weight=sample_weight)
-                    beta_ols = ridge.coef_
-            else:
-                lr = LogisticRegression(penalty='l2', C=1.0, fit_intercept=False,
-                                      max_iter=self.max_iter, solver='liblinear')
-                lr.fit(X_processed, y, sample_weight=sample_weight)
-                beta_ols = lr.coef_[0]
+                    lr = LogisticRegression(penalty='l2', C=1.0, fit_intercept=False,
+                                          max_iter=self.max_iter, solver='liblinear')
+                    lr.fit(X_tr, y_tr, sample_weight=sw_tr)
+                    beta_ols = lr.coef_[0]
 
-        # 网格搜索
-        cv_used = cv_splits if cv_splits is not None else self.cv
-        grid = GridSearchCV(
-            AdaptiveLasso(
-                fit_intercept=self.fit_intercept,
-                standardize=self.standardize,
-                max_iter=self.max_iter,
-                tol=self.tol,
-                method=self.method,
-                family=self.family,
-                initial_estimator=self.initial_estimator
-            ),
-            param_grid=param_grid,
-            cv=cv_used,
-            scoring=self.scoring,
-            n_jobs=self.n_jobs,
-            refit=True
-        )
+            # 计算自适应权重（基于训练折的beta_ols）
+            abs_beta = np.clip(np.abs(beta_ols), eps, None)
 
-        grid.fit(X, y, sample_weight=sample_weight)
+            # 对每个gamma分别计算其专属的alpha搜索路径
+            for gamma_idx, gamma in enumerate(self.gammas):
+                # 使用指定gamma计算权重
+                weights = 1.0 / (abs_beta ** gamma)
 
-        # 保存最优参数和结果
-        self.best_params_ = grid.best_params_
-        self.best_score_ = grid.best_score_
-        self.cv_results_ = grid.cv_results_
-        self.alpha = self.best_params_['alpha']
-        self.gamma = self.best_params_['gamma']
+                # 空间重构：分别扭曲训练折和验证折
+                X_adaptive_tr = X_tr / weights
+                X_adaptive_va = X_va / weights
 
-        # 1-SE 规则：选择最稀疏的模型，其分数在 best - 1*std 范围内
-        if self.use_1se:
-            best_alpha_1se, best_gamma_1se = self._select_1se_params()
-            if hasattr(self, 'verbose') and self.verbose:
-                print(f"[AdaptiveLassoCV] Best (alpha, gamma): ({self.alpha:.6f}, {self.gamma})")
-                print(f"[AdaptiveLassoCV] 1-SE (alpha, gamma): ({best_alpha_1se:.6f}, {best_gamma_1se})")
-            self.alpha = best_alpha_1se
-            self.gamma = best_gamma_1se
-            # 重新拟合最终模型
-            final_model = AdaptiveLasso(
-                alpha=self.alpha, gamma=self.gamma,
-                fit_intercept=self.fit_intercept, standardize=self.standardize,
-                max_iter=self.max_iter, tol=self.tol,
-                method=self.method, family=self.family,
-                initial_estimator=self.initial_estimator
-            )
-            final_model.fit(X, y, sample_weight=sample_weight)
-            self.coef_ = final_model.coef_
-            self.intercept_ = final_model.intercept_
-            self.beta_initial_ = final_model.beta_initial_
-            self.weights_ = final_model.weights_
-            self.n_features_in_ = final_model.n_features_in_
-            self.scaler_X = final_model.scaler_X
-            self.scaler_y = final_model.scaler_y
+                # alpha搜索路径（每个gamma有自己专属的alpha_max）
+                if self.alphas is None:
+                    if self.family.lower() == "gaussian":
+                        lambda_max = np.max(np.abs(X_adaptive_tr.T @ y_tr)) / len(y_tr)
+                    else:
+                        lambda_max = np.max(np.abs(X_adaptive_tr.T @ (y_tr - np.mean(y_tr)))) / len(y_tr)
+                    alphas = np.exp(np.linspace(np.log(lambda_max), np.log(lambda_max * self.alpha_min_ratio), n_alpha))[::-1]
+                else:
+                    alphas = self.alphas
+
+                # 遍历alpha计算验证集MSE
+                for alpha_idx, alpha in enumerate(alphas):
+                    if self.family.lower() == "gaussian":
+                        model = Lasso(alpha=alpha, fit_intercept=self.fit_intercept,
+                                     max_iter=self.max_iter, tol=self.tol)
+                        model.fit(X_adaptive_tr, y_tr, sample_weight=sw_tr)
+                        coef_scaled = model.coef_
+                        intercept_ = model.intercept_ if self.fit_intercept else 0.0
+
+                        # 还原系数并预测
+                        coef_ = coef_scaled / weights
+                        y_pred_va = X_va @ coef_ + intercept_
+                    else:
+                        model = LogisticRegression(
+                            penalty='l1', C=1.0/alpha if alpha > 0 else 1e10,
+                            fit_intercept=self.fit_intercept, max_iter=self.max_iter,
+                            tol=self.tol, solver='liblinear'
+                        )
+                        model.fit(X_adaptive_tr, y_tr, sample_weight=sw_tr)
+                        coef_scaled = model.coef_[0]
+                        intercept_ = model.intercept_[0] if self.fit_intercept else 0.0
+
+                        # 还原系数
+                        coef_ = coef_scaled / weights
+                        z_va = X_va @ coef_ + intercept_
+                        y_pred_va = 1 / (1 + np.exp(-np.clip(z_va, -30, 30)))
+
+                    # 计算验证集误差
+                    if self.scoring == 'neg_mean_squared_error':
+                        mse = np.mean((y_va - y_pred_va) ** 2)
+                        error_matrix[gamma_idx, alpha_idx, fold_idx] = mse
+                    elif self.scoring == 'roc_auc' and self.family.lower() == "binomial":
+                        try:
+                            auc = roc_auc_score(y_va, y_pred_va)
+                            error_matrix[gamma_idx, alpha_idx, fold_idx] = -auc  # 负值因为我们要最小化
+                        except:
+                            error_matrix[gamma_idx, alpha_idx, fold_idx] = np.inf
+
+                    # 追踪非零系数数量
+                    nselected_matrix[gamma_idx, alpha_idx, fold_idx] = np.sum(coef_scaled != 0)
+
+        # ============================================================
+        # 阶段二：选拔最优参数（1-SE法则）
+        # ============================================================
+        mean_error = np.mean(error_matrix, axis=2)  # (n_gamma, n_alpha)
+        std_error = np.std(error_matrix, axis=2) / np.sqrt(n_folds)  # SE of mean
+        mean_nselected = np.mean(nselected_matrix, axis=2)  # (n_gamma, n_alpha)
+
+        # 对于MSE类指标（neg_mean_squared_error），越小越好
+        if self.scoring == 'neg_mean_squared_error':
+            best_score = np.min(mean_error)
+            best_score_idx = np.unravel_index(np.argmin(mean_error), mean_error.shape)
+            threshold = best_score + std_error[best_score_idx]
+            # 找所有MSE <= threshold的候选
+            candidates_mask = mean_error <= threshold
         else:
-            # 复制最优模型的属性
-            best_model = grid.best_estimator_
-            self.coef_ = best_model.coef_
-            self.intercept_ = best_model.intercept_
-            self.beta_initial_ = best_model.beta_initial_
-            self.weights_ = best_model.weights_
-            self.n_features_in_ = best_model.n_features_in_
-            self.scaler_X = best_model.scaler_X
-            self.scaler_y = best_model.scaler_y
+            # 对于roc_auc，越大越好
+            best_score = np.max(mean_error)
+            best_score_idx = np.unravel_index(np.argmax(mean_error), mean_error.shape)
+            threshold = best_score - std_error[best_score_idx]
+            # 找所有score >= threshold的候选
+            candidates_mask = mean_error >= threshold
+
+        if not np.any(candidates_mask):
+            if hasattr(self, 'verbose') and self.verbose:
+                print("[AdaptiveLassoCV] Warning: No candidates within 1-SE, using standard min/max")
+            best_gamma_idx, best_alpha_idx = best_score_idx
+        else:
+            # 在候选中选择n_selected最少的（最稀疏的）
+            masked_nselected = np.where(candidates_mask, mean_nselected, np.inf)
+            best_flat_idx = np.argmin(masked_nselected)
+            best_gamma_idx, best_alpha_idx = np.unravel_index(best_flat_idx, mean_error.shape)
+
+        self.best_gamma_ = self.gammas[best_gamma_idx]
+
+        # 重建该gamma对应的alpha搜索路径以获取best_alpha
+        if self.alphas is None:
+            X_for_rebuild = X[splits[0][0]]
+            y_for_rebuild = y[splits[0][0]]
+            if self.standardize:
+                scaler_rebuild = StandardScaler()
+                X_for_rebuild = scaler_rebuild.fit_transform(X_for_rebuild)
+            # 重新计算beta_ols和weights
+            if X_for_rebuild.shape[0] > X_for_rebuild.shape[1]:
+                ols = LinearRegression(fit_intercept=False)
+                ols.fit(X_for_rebuild, y_for_rebuild)
+                beta_rebuild = ols.coef_
+            else:
+                ridge = Ridge(alpha=0.1, fit_intercept=False)
+                ridge.fit(X_for_rebuild, y_for_rebuild)
+                beta_rebuild = ridge.coef_
+            abs_beta_rebuild = np.clip(np.abs(beta_rebuild), eps, None)
+            weights_rebuild = 1.0 / (abs_beta_rebuild ** self.best_gamma_)
+            X_adaptive_rebuild = X_for_rebuild / weights_rebuild
+            lambda_max_rebuild = np.max(np.abs(X_adaptive_rebuild.T @ y_for_rebuild)) / len(y_for_rebuild)
+            alphas_final = np.exp(np.linspace(np.log(lambda_max_rebuild), np.log(lambda_max_rebuild * self.alpha_min_ratio), n_alpha))[::-1]
+            self.best_alpha_ = alphas_final[best_alpha_idx]
+        else:
+            self.best_alpha_ = self.alphas[best_alpha_idx]
+
+        best_cv_score = mean_error[best_gamma_idx, best_alpha_idx]
+        best_cv_nselected = mean_nselected[best_gamma_idx, best_alpha_idx]
+        self.cv_score_ = -best_cv_score if self.scoring == 'neg_mean_squared_error' else best_cv_score
+        self.cv_std_ = std_error[best_gamma_idx, best_alpha_idx]
+
+        if hasattr(self, 'verbose') and self.verbose:
+            print(f"\n[AdaptiveLassoCV] Selected: gamma={self.best_gamma_}, alpha={self.best_alpha_:.6f}")
+            print(f"[AdaptiveLassoCV] CV Score={best_cv_score:.6f}, n_selected~{best_cv_nselected:.1f}")
+
+        # ============================================================
+        # 阶段三：全量数据终极拟合
+        # ============================================================
+        # 用全量数据fit scaler（阶段一的CV中已避免泄露，此处可接受）
+        if self.standardize:
+            self.scaler_X = StandardScaler()
+            X_for_final = self.scaler_X.fit_transform(X)
+        else:
+            X_for_final = X
+
+        # 计算初始beta_ols（全量数据，用于最终模型）
+        if self.initial_estimator is not None:
+            estimator_final = clone(self.initial_estimator)
+            estimator_final.fit(X_for_final, y, sample_weight=sample_weight)
+            beta_ols_final = estimator_final.coef_.flatten()
+        else:
+            if self.family.lower() == "gaussian":
+                if X_for_final.shape[0] > X_for_final.shape[1]:
+                    ols_final = LinearRegression(fit_intercept=False)
+                    ols_final.fit(X_for_final, y, sample_weight=sample_weight)
+                    beta_ols_final = ols_final.coef_
+                else:
+                    ridge_final = Ridge(alpha=0.1, fit_intercept=False)
+                    ridge_final.fit(X_for_final, y, sample_weight=sample_weight)
+                    beta_ols_final = ridge_final.coef_
+            else:
+                lr_final = LogisticRegression(penalty='l2', C=1.0, fit_intercept=False,
+                                            max_iter=self.max_iter, solver='liblinear')
+                lr_final.fit(X_for_final, y, sample_weight=sample_weight)
+                beta_ols_final = lr_final.coef_[0]
+
+        # 计算自适应权重
+        abs_beta_final = np.clip(np.abs(beta_ols_final), eps, None)
+        weights_final = 1.0 / (abs_beta_final ** self.best_gamma_)
+
+        # 空间重构
+        X_adaptive_final = X_for_final / weights_final
+
+        # 拟合最终模型
+        if self.family.lower() == "gaussian":
+            model_final = Lasso(alpha=self.best_alpha_, fit_intercept=self.fit_intercept,
+                               max_iter=self.max_iter, tol=self.tol)
+            model_final.fit(X_adaptive_final, y, sample_weight=sample_weight)
+            coef_scaled_final = model_final.coef_
+            intercept_final = model_final.intercept_ if self.fit_intercept else 0.0
+        else:
+            model_final = LogisticRegression(
+                penalty='l1', C=1.0/self.best_alpha_ if self.best_alpha_ > 0 else 1e10,
+                fit_intercept=self.fit_intercept, max_iter=self.max_iter,
+                tol=self.tol, solver='liblinear'
+            )
+            model_final.fit(X_adaptive_final, y, sample_weight=sample_weight)
+            coef_scaled_final = model_final.coef_[0]
+            intercept_final = model_final.intercept_[0] if self.fit_intercept else 0.0
+
+        # 还原系数
+        self.coef_ = coef_scaled_final / weights_final
+        self.beta_initial_ = beta_ols_final
+        self.weights_ = weights_final
+
+        # 逆标准化
+        if self.standardize:
+            self.coef_ = self.coef_ / self.scaler_X.scale_
+            if self.fit_intercept:
+                if self.family.lower() == "gaussian":
+                    self.intercept_ = np.mean(y) - np.sum(self.coef_ * self.scaler_X.mean_)
+                else:
+                    self.intercept_ = intercept_final - np.sum(self.coef_ * self.scaler_X.mean_)
+            self.scaler_y = None
+        else:
+            self.intercept_ = intercept_final
+
+        self.n_features_in_ = X.shape[1]
+        self.is_fitted_ = True
 
         return self
-
-    def _select_1se_params(self):
-        """
-        1-SE 规则：选择最简洁的模型，其分数在 best - 1*SE 范围内
-
-        在候选中选择非零系数数量最少的（最稀疏的）
-
-        Returns:
-            tuple: (best_alpha_1se, best_gamma_1se)
-        """
-        cv_results = self.cv_results_
-        mean_score = cv_results['mean_test_score']
-        std_score = cv_results['std_test_score']
-        alphas = cv_results['param_alpha']
-        gammas = cv_results['param_gamma']
-
-        # 找出最佳分数
-        best_score = np.max(mean_score)
-
-        # 严格使用标准误 SE = std / sqrt(K)
-        K = self.cv
-        se_score = std_score / np.sqrt(K)
-
-        # 计算阈值：best_score - 1*SE (score 越大越好，所以用减号)
-        threshold = best_score - se_score
-
-        # 找出所有通过 1-SE 检验的候选
-        candidates_mask = mean_score >= threshold
-        candidate_indices = np.where(candidates_mask)[0]
-
-        if len(candidate_indices) == 0:
-            # 如果没有候选，返回原始最优
-            return self.best_params_['alpha'], self.best_params_['gamma']
-
-        # 计算每个候选的非零系数数量，选择最稀疏的
-        n_nonzero_list = []
-        for idx in candidate_indices:
-            alpha = alphas[idx]
-            gamma = gammas[idx]
-            # 临时创建模型获取系数
-            model = AdaptiveLasso(
-                alpha=alpha, gamma=gamma,
-                fit_intercept=self.fit_intercept, standardize=self.standardize,
-                max_iter=self.max_iter, tol=self.tol,
-                method=self.method, family=self.family,
-                initial_estimator=self.initial_estimator
-            )
-            model.fit(self._X_for_cv, self._y_for_cv)
-            n_nonzero = np.sum(np.abs(model.coef_) > 1e-6)
-            n_nonzero_list.append(n_nonzero)
-
-        # 选择非零系数最少的（最稀疏的）
-        best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
-        return alphas[best_candidate_idx], gammas[best_candidate_idx]
 
     @staticmethod
     def path(X, y, alphas=None, n_alphas=100, alpha_min_ratio=0.01, gamma=1.0, **kwargs):
