@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from joblib import Parallel, delayed
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -695,6 +696,84 @@ def run_snr(config_path, output_dir=None, dry_run=False):
     return snr_study(config)
 
 
+def _run_single_benchmark_task(task):
+    """
+    执行单个基准测试任务（sigma, repeat, model 的组合）
+    每个任务独立生成自己的数据和分割，确保并行安全
+
+    Returns:
+        dict or None: 结果字典，失败时返回 None
+    """
+    sigma, repeat, model_info, config, exp_dir, n_folds = task
+    seed = 42 + repeat
+
+    from sklearn.model_selection import KFold
+    from experiments.modules import DataGenerator
+
+    try:
+        # 数据生成
+        data_gen = DataGenerator(random_state=seed)
+        X, y, beta_true = data_gen.generate(
+            n_samples=config["n_samples"],
+            n_features=config["n_features"],
+            n_nonzero=config["n_nonzero"],
+            sigma=sigma,
+            correlation_type=config.get("correlation_type", "pairwise"),
+            rho=config.get("rho", 0.5),
+            block_size=config.get("block_size", 10),
+            n_blocks=config.get("n_blocks", 50),
+        )
+
+        # CV 分割
+        kfold = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        splits = list(kfold.split(X))
+
+        algo_name = model_info["algo"]
+        display_name = model_info["display"]
+        use_cv = model_info.get("cv", False)
+        model_params = model_info.get("params", {})
+
+        trial_config = {
+            **config,
+            **model_params,
+            "algo": algo_name,
+            "sigma": sigma,
+            "n_repeats": 1,
+            "random_state_base": seed,
+            "cv_folds": n_folds if use_cv else 1,
+        }
+        trial_config["experiment"] = f"{config['experiment']}_sigma{sigma}_{algo_name}_r{repeat}"
+
+        result = run_benchmark_trial_with_splits(
+            trial_config, exp_dir, X=X, y=y, beta_true=beta_true, splits=splits
+        )
+
+        if result and result.get("n_folds_completed", 0) > 0:
+            individual = result.get("individual_metrics", [])
+            entries = []
+            for repeat_idx, repeat_metrics in enumerate(individual):
+                entry = {
+                    "sigma": sigma,
+                    "snr": round(1.0 / sigma, 2),
+                    "repeat": repeat,
+                    "model": display_name,
+                    "algo": algo_name,
+                    "use_cv": use_cv,
+                    **repeat_metrics,
+                }
+                entries.append(entry)
+            return entries
+        return None
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "sigma": sigma,
+            "repeat": repeat,
+            "model": model_info.get("display", "unknown"),
+        }
+
+
 def benchmark_study(config):
     """
     Benchmark: Compare AdaptiveFlippedLasso (optimal params) vs other models' CV versions.
@@ -704,6 +783,8 @@ def benchmark_study(config):
     - Data generation: outside model loop, same seed = same data for all models
     - CV splits: pre-generated and shared across all models
     - Seeds: 42 + repeat for reproducibility
+
+    Parallelization: Uses joblib to parallelize across (sigma, repeat, model) tasks.
     """
     from sklearn.model_selection import KFold
     from experiments.modules import DataGenerator
@@ -737,83 +818,48 @@ def benchmark_study(config):
     ])
     print(f"[sweep:benchmark] Comparing {len(models_to_compare)} models")
 
+    # 并行度配置
+    n_jobs = config.get("n_jobs", -1)  # 默认全部并行
+    print(f"[sweep:benchmark] Parallel jobs: {n_jobs}")
+
     # Generate experiment directory
     config["output_dir"] = config.get("output_dir", "/home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark")
     exp_dir = generate_experiment_dir(config)
     save_config(config, exp_dir)
 
-    all_results = []
     n_repeats = config.get("n_repeats", 5)
     n_folds = config.get("cv_folds", 5)
 
+    # ============================================================
+    # 构建任务列表并并行执行
+    # ============================================================
+    tasks = []
     for sigma in sigma_values:
-        print(f"\n[sweep:benchmark] Testing sigma={sigma} (SNR={1.0/sigma:.2f})...")
-
         for repeat in range(n_repeats):
-            seed = 42 + repeat  # 保证可重复性，种子递增
-
-            # ============================================================
-            # 数据生成：每个 (sigma, repeat) 只生成一次
-            # ============================================================
-            data_gen = DataGenerator(random_state=seed)
-            X, y, beta_true = data_gen.generate(
-                n_samples=config["n_samples"],
-                n_features=config["n_features"],
-                n_nonzero=config["n_nonzero"],
-                sigma=sigma,  # 传入 sigma，不同 SNR 生成不同数据
-                correlation_type=config.get("correlation_type", "pairwise"),
-                rho=config.get("rho", 0.5),
-                block_size=config.get("block_size", 10),
-                n_blocks=config.get("n_blocks", 50),
-            )
-
-            # ============================================================
-            # CV 分割：每个 (sigma, repeat) 只生成一次，转为列表可复用
-            # ============================================================
-            kfold = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
-            splits = list(kfold.split(X))  # 物化为列表，避免一次性生成器问题
-
             for model_info in models_to_compare:
-                algo_name = model_info["algo"]
-                display_name = model_info["display"]
-                use_cv = model_info.get("cv", False)
-                model_params = model_info.get("params", {})
+                tasks.append((sigma, repeat, model_info, config, exp_dir, n_folds))
 
-                trial_config = {
-                    **config,
-                    **model_params,
-                    "algo": algo_name,
-                    "sigma": sigma,
-                    "n_repeats": 1,
-                    "random_state_base": seed,
-                    "cv_folds": n_folds if use_cv else 1,
-                }
-                trial_config["experiment"] = f"{config['experiment']}_sigma{sigma}_{algo_name}_r{repeat}"
+    print(f"[sweep:benchmark] Total tasks: {len(tasks)} (sigma={len(sigma_values)} × repeat={n_repeats} × models={len(models_to_compare)})")
 
-                try:
-                    # 传入预生成的数据和分割
-                    result = run_benchmark_trial_with_splits(
-                        trial_config, exp_dir, X=X, y=y, beta_true=beta_true, splits=splits
-                    )
+    # 使用 joblib 并行执行
+    results_list = Parallel(n_jobs=n_jobs, verbose=10)(
+        delayed(_run_single_benchmark_task)(task) for task in tasks
+    )
 
-                    if result and result.get("n_folds_completed", 0) > 0:
-                        individual = result.get("individual_metrics", [])
-                        for repeat_idx, repeat_metrics in enumerate(individual):
-                            result_entry = {
-                                "sigma": sigma,
-                                "snr": round(1.0 / sigma, 2),
-                                "repeat": repeat,
-                                "model": display_name,
-                                "algo": algo_name,
-                                "use_cv": use_cv,
-                                **repeat_metrics,
-                            }
-                            all_results.append(result_entry)
+    # 收集结果
+    all_results = []
+    error_count = 0
+    for i, result in enumerate(results_list):
+        if result is None:
+            continue
+        if isinstance(result, dict) and "error" in result:
+            print(f"  [sweep:benchmark] ERROR at sigma={result['sigma']}, model={result['model']}, repeat={result['repeat']}: {result['error']}")
+            error_count += 1
+            continue
+        all_results.extend(result)
 
-                except Exception as e:
-                    print(f"  [sweep:benchmark] ERROR at sigma={sigma}, model={display_name}, repeat={repeat}: {e}")
-                    traceback.print_exc()
-                    continue
+    if error_count > 0:
+        print(f"[sweep:benchmark] {error_count} tasks failed")
 
     if not all_results:
         raise RuntimeError("No successful trials in benchmark")
