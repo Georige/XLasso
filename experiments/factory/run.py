@@ -256,6 +256,7 @@ def get_algo_params(algo_name, config):
             "n_alpha": config.get("n_alpha", 50),
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
+            "weight_clip_max": config.get("weight_clip_max", 100.0),
         })
     elif algo_name == "aflclassifier_cv":
         # AdaptiveFlippedLassoCV parameters

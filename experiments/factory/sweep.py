@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import inspect
 import json
 import sys
 import traceback
@@ -698,8 +699,16 @@ def benchmark_study(config):
     """
     Benchmark: Compare AdaptiveFlippedLasso (optimal params) vs other models' CV versions.
     Uses exp2 data configuration (AR(1), rho=0.8) across different SNR values.
+
+    Fair comparison: All models use the SAME data and SAME CV splits for each (sigma, repeat).
+    - Data generation: outside model loop, same seed = same data for all models
+    - CV splits: pre-generated and shared across all models
+    - Seeds: 42 + repeat for reproducibility
     """
-    print("[sweep:benchmark] Starting Benchmark Comparison")
+    from sklearn.model_selection import KFold
+    from experiments.modules import DataGenerator
+
+    print("[sweep:benchmark] Starting Fair Benchmark Comparison")
     print(f"[sweep:benchmark] Config: {config['experiment']}")
 
     search_space = config.get("search_space", {})
@@ -735,32 +744,57 @@ def benchmark_study(config):
 
     all_results = []
     n_repeats = config.get("n_repeats", 5)
+    n_folds = config.get("cv_folds", 5)
 
     for sigma in sigma_values:
         print(f"\n[sweep:benchmark] Testing sigma={sigma} (SNR={1.0/sigma:.2f})...")
 
-        for model_info in models_to_compare:
-            algo_name = model_info["algo"]
-            display_name = model_info["display"]
-            use_cv = model_info.get("cv", False)
-            model_params = model_info.get("params", {})
+        for repeat in range(n_repeats):
+            seed = 42 + repeat  # 保证可重复性，种子递增
 
-            print(f"  [sweep:benchmark] Model: {display_name} ({'CV' if use_cv else 'fixed'})")
+            # ============================================================
+            # 数据生成：每个 (sigma, repeat) 只生成一次
+            # ============================================================
+            data_gen = DataGenerator(random_state=seed)
+            X, y, beta_true = data_gen.generate(
+                n_samples=config["n_samples"],
+                n_features=config["n_features"],
+                n_nonzero=config["n_nonzero"],
+                sigma=sigma,  # 传入 sigma，不同 SNR 生成不同数据
+                correlation_type=config.get("correlation_type", "pairwise"),
+                rho=config.get("rho", 0.5),
+                block_size=config.get("block_size", 10),
+                n_blocks=config.get("n_blocks", 50),
+            )
 
-            for repeat in range(n_repeats):
+            # ============================================================
+            # CV 分割：每个 (sigma, repeat) 只生成一次，转为列表可复用
+            # ============================================================
+            kfold = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+            splits = list(kfold.split(X))  # 物化为列表，避免一次性生成器问题
+
+            for model_info in models_to_compare:
+                algo_name = model_info["algo"]
+                display_name = model_info["display"]
+                use_cv = model_info.get("cv", False)
+                model_params = model_info.get("params", {})
+
                 trial_config = {
                     **config,
                     **model_params,
                     "algo": algo_name,
                     "sigma": sigma,
                     "n_repeats": 1,
-                    "random_state_base": repeat,
-                    "cv_folds": 5 if use_cv else 1,
+                    "random_state_base": seed,
+                    "cv_folds": n_folds if use_cv else 1,
                 }
                 trial_config["experiment"] = f"{config['experiment']}_sigma{sigma}_{algo_name}_r{repeat}"
 
                 try:
-                    result = run_benchmark_trial(trial_config, exp_dir)
+                    # 传入预生成的数据和分割
+                    result = run_benchmark_trial_with_splits(
+                        trial_config, exp_dir, X=X, y=y, beta_true=beta_true, splits=splits
+                    )
 
                     if result and result.get("n_folds_completed", 0) > 0:
                         individual = result.get("individual_metrics", [])
@@ -807,6 +841,99 @@ def benchmark_study(config):
         "exp_dir": str(exp_dir),
         "report": str(report_path),
         "n_trials": len(all_results),
+    }
+
+
+def run_benchmark_trial_with_splits(config, parent_dir, X, y, beta_true, splits):
+    """
+    Run a single benchmark trial with the new CV strategy:
+
+    1. Split data: 80% train, 20% validation (hold-out)
+    2. On 80% train: generate K-fold CV splits for hyperparameter selection
+    3. Algorithm uses K-fold CV to select hyperparameters, trains on full 80% train
+    4. Evaluate on 20% validation (hold-out)
+
+    All algorithms use the SAME train/val split and SAME K-fold CV splits for fair comparison.
+    """
+    from experiments.factory.run import ALGO_REGISTRY
+    from experiments.modules import MetricCalculator
+    from sklearn.model_selection import KFold, train_test_split
+    import time
+
+    n_folds = config.get("cv_folds", 10)  # K-fold for internal CV
+    random_state = config.get("random_state_base", 42)
+
+    # Use correct params for each algo
+    algo_name = config["algo"].lower()
+    algo_params = get_benchmark_algo_params(algo_name, config)
+
+    # Get algorithm
+    algo_class = ALGO_REGISTRY.get(algo_name)
+    if algo_class is None:
+        raise ValueError(f"Unknown algorithm: {algo_name}")
+
+    metrics_list = []
+
+    # ============================================================
+    # Step 1: 80/20 split - 80% train, 20% validation (hold-out)
+    # ============================================================
+    train_idx, val_idx = train_test_split(
+        np.arange(len(y)),
+        test_size=0.2,
+        random_state=random_state,
+        shuffle=True
+    )
+    X_train, X_val = X[train_idx], X[val_idx]
+    y_train, y_val = y[train_idx], y[val_idx]
+
+    # ============================================================
+    # Step 2: Generate K-fold CV splits on 80% train
+    # ============================================================
+    kfold = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    cv_splits = list(kfold.split(X_train))  # List of (train_idx, val_idx) within X_train
+
+    # ============================================================
+    # Step 3: Algorithm uses K-fold CV for hyperparameter selection
+    # ============================================================
+    # Check if algorithm supports cv_splits parameter
+    algo = algo_class(**algo_params)
+    supports_cv_splits = 'cv_splits' in inspect.signature(algo.fit).parameters
+
+    start_time = time.time()
+    if supports_cv_splits:
+        algo.fit(X_train, y_train, cv_splits=cv_splits)
+    else:
+        # Fallback: algorithm creates its own CV splits
+        algo.fit(X_train, y_train)
+    train_time = time.time() - start_time
+
+    # ============================================================
+    # Step 4: Evaluate on 20% validation (hold-out)
+    # ============================================================
+    y_pred = algo.predict(X_val)
+
+    metrics_calc = MetricCalculator()
+    fold_metrics = metrics_calc.calculate(
+        y_true=y_val,
+        y_pred=y_pred,
+        beta_true=beta_true,
+        beta_est=algo.coef_,
+    )
+    fold_metrics["fold"] = 0
+    fold_metrics["train_time"] = train_time
+    if hasattr(algo, 'best_gamma_'):
+        fold_metrics["best_gamma"] = algo.best_gamma_
+    if hasattr(algo, 'best_alpha_'):
+        fold_metrics["best_alpha"] = algo.best_alpha_
+    if hasattr(algo, 'best_lambda_ridge_'):
+        fold_metrics["best_lambda_ridge"] = algo.best_lambda_ridge_
+    if hasattr(algo, 'cv_score_'):
+        fold_metrics["cv_score"] = algo.cv_score_
+    metrics_list.append(fold_metrics)
+
+    return {
+        "n_folds_completed": len(metrics_list),
+        "individual_metrics": metrics_list,
     }
 
 
@@ -894,6 +1021,23 @@ def get_benchmark_algo_params(algo_name, config):
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
         })
+    elif algo_name == "adaptive_flipped_lasso_cv":
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 1.0, 10.0]),
+            "gamma_list": config.get("gamma_list", [0.5, 1.0, 2.0]),
+            "cv": config.get("cv_folds", 5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 2000),
+            "tol": config.get("tol", 0.0001),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 42),
+            "verbose": config.get("verbose", False),
+            "use_post_ols_debiasing": config.get("use_post_ols_debiasing", False),
+            "auto_tune_collinearity": config.get("auto_tune_collinearity", True),
+            "weight_clip_max": config.get("weight_clip_max", 100.0),
+        })
     elif algo_name == "adaptive_flipped_lasso_ebic":
         params.update({
             "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 0.5, 1.0, 2.0, 5.0, 10.0]),
@@ -927,6 +1071,7 @@ def get_benchmark_algo_params(algo_name, config):
             "cv": config.get("cv_folds", 5),
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
+            "use_1se": True,  # Enable 1-SE rule
         })
     elif algo_name == "lasso":
         params.update({
@@ -941,6 +1086,7 @@ def get_benchmark_algo_params(algo_name, config):
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
             "random_state": config.get("random_state", 42),
+            "use_1se": True,  # Enable 1-SE rule
         })
     elif algo_name == "fused_lasso":
         params.update({
@@ -978,6 +1124,7 @@ def get_benchmark_algo_params(algo_name, config):
             "fit_intercept": config.get("fit_intercept", True),
             "family": config.get("family", "gaussian"),
             "n_folds": config.get("cv_folds", 5),
+            "use_1se": True,  # Enable 1-SE rule
         })
     elif algo_name == "fused_lasso_cv":
         params.update({

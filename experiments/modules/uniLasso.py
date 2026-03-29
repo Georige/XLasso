@@ -172,8 +172,20 @@ class UniLassoCV(BaseSparseSelector):
         self.best_lmda_: Optional[float] = None
         self.cv_results_: Optional[Dict] = None
 
-    def fit(self, X: npt.NDArray, y: npt.NDArray, **kwargs) -> "UniLassoCV":
-        """Fit UniLassoCV model with cross-validation."""
+    def fit(self, X: npt.NDArray, y: npt.NDArray, cv_splits=None, **kwargs) -> "UniLassoCV":
+        """
+        Fit UniLassoCV model with cross-validation.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Training data
+        y : np.ndarray
+            Target values
+        cv_splits : list of tuples, optional
+            Pre-generated CV splits (list of (train_idx, val_idx) tuples).
+            If provided, uses these splits instead of creating new KFold internally.
+        """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
 
@@ -196,11 +208,20 @@ class UniLassoCV(BaseSparseSelector):
         self._X_for_cv = X_scaled
         self._y_for_cv = y_centered
 
-        self.result_ = cv_unilasso(
-            X=X_scaled, y=y_centered, family=self.family, n_folds=self.n_folds,
-            lmda_min_ratio=self.lmda_min_ratio, verbose=self.verbose,
-            seed=self.random_state,
-        )
+        if cv_splits is not None:
+            # Use external CV splits for benchmark compatibility
+            from unilasso.uni_lasso import cv_unilasso_with_splits
+            self.result_ = cv_unilasso_with_splits(
+                X=X_scaled, y=y_centered, cv_splits=cv_splits,
+                family=self.family, lmda_min_ratio=self.lmda_min_ratio,
+                verbose=self.verbose, seed=self.random_state,
+            )
+        else:
+            self.result_ = cv_unilasso(
+                X=X_scaled, y=y_centered, family=self.family, n_folds=self.n_folds,
+                lmda_min_ratio=self.lmda_min_ratio, verbose=self.verbose,
+                seed=self.random_state,
+            )
 
         if hasattr(self.result_, 'coefs'):
             if self.result_.coefs.ndim == 2:

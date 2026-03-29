@@ -53,6 +53,7 @@ class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
         fit_intercept: bool = True,
         random_state: int = 2026,
         verbose: bool = False,
+        weight_clip_max: float = 100.0,  # Max value for weight clipping, set None to disable
     ):
         # 超参数
         self.lambda_ridge = lambda_ridge
@@ -66,6 +67,7 @@ class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
         self.fit_intercept = fit_intercept
         self.random_state = random_state
         self.verbose = verbose
+        self.weight_clip_max = weight_clip_max
 
         # 初始化拟合后属性
         self._init_fitted_attributes()
@@ -128,7 +130,8 @@ class BaseAdaptiveFlippedLasso(BaseEstimator, ABC):
         raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** self.gamma
         min_w = np.min(raw_weights)
         w_normalized = raw_weights / min_w
-        weights = np.clip(w_normalized, 1.0, 100.0)
+        clip_max = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+        weights = np.clip(w_normalized, 1.0, clip_max)
 
         # 翻转特征方向
         X_flipped = X * signs
@@ -355,6 +358,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         verbose: bool = False,
         use_post_ols_debiasing: bool = False,  # Post-selection OLS debiasing
         auto_tune_collinearity: bool = True,  # Auto-detect collinearity and adjust gamma_list
+        weight_clip_max: float = 100.0,  # Max value for weight clipping, set None to disable
     ):
         self.lambda_ridge_list = lambda_ridge_list
         self.gamma_list = gamma_list
@@ -369,6 +373,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.verbose = verbose
         self.use_post_ols_debiasing = use_post_ols_debiasing
         self.auto_tune_collinearity = auto_tune_collinearity
+        self.weight_clip_max = weight_clip_max
 
         self._init_fitted_attributes()
 
@@ -387,6 +392,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
             'verbose': self.verbose,
             'use_post_ols_debiasing': self.use_post_ols_debiasing,
             'auto_tune_collinearity': self.auto_tune_collinearity,
+            'weight_clip_max': self.weight_clip_max,
         }
         return params
 
@@ -398,9 +404,22 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
                 raise ValueError(f"Invalid parameter '{key}' for estimator {self.__class__.__name__}")
         return self
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
         """
         拟合 AdaptiveFlippedLassoCV 模型（严格隔离版）
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Training data
+        y : np.ndarray
+            Target values
+        sample_weight : np.ndarray, optional
+            Sample weights
+        cv_splits : list of tuples, optional
+            Pre-generated CV splits (list of (train_idx, val_idx) tuples).
+            If provided, uses these splits instead of creating new KFold.
+            This ensures all algorithms use the same CV splits for fair comparison.
         """
         from sklearn.model_selection import KFold
         from sklearn.metrics import mean_squared_error
@@ -448,11 +467,21 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         # ============================================================
         # 阶段一：K 折严格内部寻优
         # ============================================================
-        error_matrix = np.full((n_gamma, self.n_alpha, self.cv), np.inf)
-        nselected_matrix = np.zeros((n_gamma, self.n_alpha, self.cv))
-        kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
+        # 如果传入了 cv_splits，使用它；否则自己创建 KFold
+        if cv_splits is not None:
+            n_folds = len(cv_splits)
+            splits = cv_splits
+            if self.verbose:
+                print(f"[ADL] Using provided {n_folds}-fold CV splits")
+        else:
+            n_folds = self.cv
+            kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
+            splits = list(kfold.split(X))
 
-        for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(X)):
+        error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
+        nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
+
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
             X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
 
@@ -465,7 +494,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
                 X_tr, X_va = X_tr_raw, X_va_raw
 
             if self.verbose:
-                print(f"[Fold {fold_idx + 1}/{self.cv}] train={len(train_idx)}, val={len(val_idx)}")
+                print(f"[Fold {fold_idx + 1}/{n_folds}] train={len(train_idx)}, val={len(val_idx)}")
 
             # 先验提取：仅在训练折上做 RidgeCV（绝对隔离）
             ridge_cv = RidgeCV(alphas=self.lambda_ridge_list, cv=3)
@@ -482,7 +511,8 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
                 raw_weights = 1.0 / (np.abs(beta_ridge_fold) + eps) ** gamma
                 min_w = np.min(raw_weights)
                 w_normalized = raw_weights / min_w
-                weights = np.clip(w_normalized, 1.0, 100.0)
+                clip_max = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+                weights = np.clip(w_normalized, 1.0, clip_max)
 
                 # 空间重构：分别扭曲训练折和验证折
                 X_adaptive_tr = (X_tr * signs_fold) / weights
@@ -516,7 +546,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         # 阶段二：选拔最优参数（1-SE 法则）
         # ============================================================
         mean_error = np.mean(error_matrix, axis=2)  # (n_gamma, n_alpha)
-        std_error = np.std(error_matrix, axis=2) / np.sqrt(self.cv)  # SE of mean
+        std_error = np.std(error_matrix, axis=2) / np.sqrt(n_folds)  # SE of mean
         mean_nselected = np.mean(nselected_matrix, axis=2)  # (n_gamma, n_alpha)
 
         # 1-SE 法则：选择最稀疏的模型，其 MSE 在 min(MSE) + 1*SE 范围内
@@ -568,7 +598,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         signs_tmp[signs_tmp == 0] = 1.0
         raw_weights_tmp = 1.0 / (np.abs(beta_ridge_tmp) + eps) ** self.best_gamma_
         min_w = np.min(raw_weights_tmp)
-        weights_tmp = np.clip(raw_weights_tmp / min_w, 1.0, 100.0)
+        weights_tmp = np.clip(raw_weights_tmp / min_w, 1.0, self.weight_clip_max if self.weight_clip_max is not None else float('inf'))
         X_adaptive_tmp = (X_for_stage2 * signs_tmp) / weights_tmp
         alpha_max_tmp = np.max(np.abs(X_adaptive_tmp.T @ y)) / len(y)
         alpha_min_tmp = alpha_max_tmp * self.alpha_min_ratio
@@ -605,7 +635,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
 
         raw_weights_final = 1.0 / (np.abs(self.beta_ridge_) + eps) ** self.best_gamma_
         min_w = np.min(raw_weights_final)
-        self.weights_ = np.clip(raw_weights_final / min_w, 1.0, 100.0)
+        self.weights_ = np.clip(raw_weights_final / min_w, 1.0, self.weight_clip_max if self.weight_clip_max is not None else float('inf'))
 
         X_adaptive_final = (X_for_cv * signs_final) / self.weights_
 
@@ -819,7 +849,8 @@ class AdaptiveFlippedLassoEBIC(BaseAdaptiveFlippedLasso, RegressorMixin):
                 # Min-Anchored Normalization
                 raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** gamma
                 min_w = np.min(raw_weights)
-                weights = np.clip(raw_weights / min_w, 1.0, 100.0)
+                clip_max = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+                weights = np.clip(raw_weights / min_w, 1.0, clip_max)
 
                 # 空间重构
                 X_adaptive = (X * signs) / weights
@@ -901,7 +932,7 @@ class AdaptiveFlippedLassoEBIC(BaseAdaptiveFlippedLasso, RegressorMixin):
 
         raw_weights_final = 1.0 / (np.abs(self.beta_ridge_) + eps) ** self.best_gamma_
         min_w = np.min(raw_weights_final)
-        self.weights_ = np.clip(raw_weights_final / min_w, 1.0, 100.0)
+        self.weights_ = np.clip(raw_weights_final / min_w, 1.0, self.weight_clip_max if self.weight_clip_max is not None else float('inf'))
 
         X_adaptive_final = (X * signs_final) / self.weights_
 

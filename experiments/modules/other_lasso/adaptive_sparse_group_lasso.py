@@ -215,9 +215,21 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
         self.n_jobs = n_jobs
         self.use_1se = use_1se
 
-    def fit(self, X, y, sample_weight=None):
+    def fit(self, X, y, sample_weight=None, cv_splits=None):
         """
         用交叉验证拟合模型，选择最优参数
+
+        Parameters
+        ----------
+        X : array-like
+            Training data
+        y : array-like
+            Target values
+        sample_weight : array-like, optional
+            Sample weights
+        cv_splits : list of tuples, optional
+            Pre-generated CV splits (list of (train_idx, val_idx) tuples).
+            If provided, uses these splits instead of creating new KFold.
         """
         from sklearn.model_selection import GridSearchCV
         from sklearn.metrics import make_scorer, roc_auc_score, mean_squared_error
@@ -257,6 +269,7 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
         }
 
         # 网格搜索
+        cv_used = cv_splits if cv_splits is not None else self.cv
         grid = GridSearchCV(
             AdaptiveSparseGroupLasso(
                 groups=self.groups,
@@ -269,7 +282,7 @@ class AdaptiveSparseGroupLassoCV(AdaptiveSparseGroupLasso):
                 family=self.family
             ),
             param_grid=param_grid,
-            cv=self.cv,
+            cv=cv_used,
             scoring=self.scoring,
             n_jobs=self.n_jobs,
             refit=True

@@ -56,9 +56,21 @@ class NLassoCV(BaseEstimator, RegressorMixin):
         self.cv_results_ = None
         self.is_fitted_ = False
 
-    def fit(self, X: np.ndarray, y: np.ndarray, groups=None, **fit_params):
+    def fit(self, X: np.ndarray, y: np.ndarray, groups=None, cv_splits=None, **fit_params):
         """
         拟合模型并执行交叉验证调参
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Training data
+        y : np.ndarray
+            Target values
+        groups : array-like, optional
+            Group labels for stratified CV
+        cv_splits : list of tuples, optional
+            Pre-generated CV splits (list of (train_idx, val_idx) tuples).
+            If provided, uses these splits instead of creating new KFold.
         """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
@@ -78,7 +90,17 @@ class NLassoCV(BaseEstimator, RegressorMixin):
 
         param_combinations = list(product(lambda_ridges, gammas, s_list, group_thresholds))
         n_combinations = len(param_combinations)
-        n_folds = self.cv
+
+        # 如果传入了 cv_splits，使用它；否则自己创建 KFold
+        if cv_splits is not None:
+            n_folds = len(cv_splits)
+            splits = cv_splits
+            if self.verbose:
+                print(f"[NLassoCV] Using provided {n_folds}-fold CV splits")
+        else:
+            n_folds = self.cv
+            kfold = KFold(n_splits=n_folds, shuffle=True, random_state=self.random_state)
+            splits = list(kfold.split(X))
 
         if self.verbose:
             print(f"[NLassoCV] {n_combinations} param combos × {n_folds} folds = {n_combinations * n_folds} fits")
@@ -86,10 +108,9 @@ class NLassoCV(BaseEstimator, RegressorMixin):
         # 存储每组参数的 fold-level 分数
         all_scores = np.full((n_combinations, n_folds), np.nan)
 
-        kfold = KFold(n_splits=n_folds, shuffle=True, random_state=self.random_state)
         fold_idx = 0
 
-        for train_idx, val_idx in kfold.split(X):
+        for train_idx, val_idx in splits:
             X_tr, X_va = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
 
@@ -285,9 +306,21 @@ class NLassoClassifierCV(BaseEstimator, ClassifierMixin):
         self.is_fitted_ = False
         self.classes_ = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray, groups=None, **fit_params):
+    def fit(self, X: np.ndarray, y: np.ndarray, groups=None, cv_splits=None, **fit_params):
         """
         拟合模型并执行交叉验证调参
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Training data
+        y : np.ndarray
+            Target values
+        groups : array-like, optional
+            Group labels for stratified CV
+        cv_splits : list of tuples, optional
+            Pre-generated CV splits (list of (train_idx, val_idx) tuples).
+            If provided, uses these splits instead of creating new KFold.
         """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.int32)
@@ -311,7 +344,17 @@ class NLassoClassifierCV(BaseEstimator, ClassifierMixin):
 
         param_combinations = list(product(lambda_ridges, gammas, s_list, group_thresholds))
         n_combinations = len(param_combinations)
-        n_folds = self.cv
+
+        # 如果传入了 cv_splits，使用它；否则自己创建 StratifiedKFold
+        if cv_splits is not None:
+            n_folds = len(cv_splits)
+            splits = cv_splits
+            if self.verbose:
+                print(f"[NLassoClassifierCV] Using provided {n_folds}-fold CV splits")
+        else:
+            n_folds = self.cv
+            kfold = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=self.random_state)
+            splits = list(kfold.split(X, y))
 
         if self.verbose:
             print(f"[NLassoClassifierCV] {n_combinations} param combos × {n_folds} folds = {n_combinations * n_folds} fits")
@@ -319,10 +362,9 @@ class NLassoClassifierCV(BaseEstimator, ClassifierMixin):
         # 存储每组参数的 fold-level 分数
         all_scores = np.full((n_combinations, n_folds), np.nan)
 
-        kfold = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=self.random_state)
         fold_idx = 0
 
-        for train_idx, val_idx in kfold.split(X, y):
+        for train_idx, val_idx in splits:
             X_tr, X_va = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
 

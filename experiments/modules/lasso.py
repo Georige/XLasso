@@ -177,9 +177,24 @@ class LassoCV(BaseSparseSelector):
         X: npt.NDArray,
         y: npt.NDArray,
         sample_weight: Optional[np.ndarray] = None,
+        cv_splits=None,
         **kwargs
     ) -> "LassoCV":
-        """Fit LassoCV model with cross-validation."""
+        """
+        Fit LassoCV model with cross-validation.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Training data
+        y : np.ndarray
+            Target values
+        sample_weight : np.ndarray, optional
+            Sample weights
+        cv_splits : list of tuples, optional
+            Pre-generated CV splits (list of (train_idx, val_idx) tuples).
+            If provided, uses these splits instead of creating new KFold.
+        """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
 
@@ -209,9 +224,10 @@ class LassoCV(BaseSparseSelector):
 
         # Fit sklearn LassoCV
         # We will manually apply 1-SE rule after fitting using mse_path_
+        cv_used = cv_splits if cv_splits is not None else self.cv
         self._model = SklearnLassoCV(
             alphas=self.alphas,
-            cv=self.cv,
+            cv=cv_used,
             fit_intercept=False,  # We handle intercept manually
             max_iter=self.max_iter,
             tol=self.tol,
@@ -226,7 +242,8 @@ class LassoCV(BaseSparseSelector):
             mse_path = self._model.mse_path_
             mean_mse = mse_path.mean(axis=-1)
             std_mse = mse_path.std(axis=-1)
-            se_mse = std_mse / np.sqrt(self.cv)
+            n_folds_used = len(cv_splits) if cv_splits is not None else self.cv
+            se_mse = std_mse / np.sqrt(n_folds_used)
 
             # Find min MSE and its SE
             min_mse_idx = np.argmin(mean_mse)
