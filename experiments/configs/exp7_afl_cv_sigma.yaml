@@ -45,7 +45,7 @@ n_alpha: 30
 max_iter: 100000
 tol: 0.0001
 use_post_ols_debiasing: false
-auto_tune_collinearity: true
+auto_tune_collinearity: false
 weight_clip_max: null
 eps: 1.0e-5
 

@@ -40,14 +40,25 @@ n_alpha: 30
 max_iter: 100000
 tol: 0.0001
 use_post_ols_debiasing: false
-auto_tune_collinearity: true
+auto_tune_collinearity: false
 weight_clip_max: null  # No clipping for EN variant
 eps: 1.0e-5
 
 compare_models:
   - algo: adaptive_flipped_lasso_cv_en
-    display: AFL-CV-EN (ElasticNet)
+    display: AFL-CV-EN V1 (Min-MSE γ / 1-SE α)
     cv: true
+    params:
+      gamma_list: [0.3, 0.5, 0.7, 1.0, 2.0, 3.0]
+      lambda_ridge_list: [0.1, 1.0, 5.0, 10.0]
+      l1_ratio_list: [0.1, 0.5, 0.9]
+  - algo: adaptive_flipped_lasso_cv_en_v2
+    display: AFL-CV-EN V2 (1-SE γ / Min-MSE α)
+    cv: true
+    params:
+      gamma_list: [0.5, 1.0, 2.0]
+      lambda_ridge_list: [0.1, 1.0, 10.0]
+      l1_ratio_list: [0.5, 0.9]
   - algo: adaptive_lasso_cv
     display: AdaptiveLassoCV (fixed)
     cv: true
