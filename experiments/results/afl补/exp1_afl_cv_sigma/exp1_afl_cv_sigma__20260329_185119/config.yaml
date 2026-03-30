@@ -1,0 +1,47 @@
+algo: adaptive_flipped_lasso_cv
+alpha_min_ratio: 0.0001
+auto_tune_collinearity: true
+compare_models:
+- algo: adaptive_flipped_lasso_cv
+  cv: true
+  display: AdaptiveFlippedLassoCV
+consistent_split: true
+correlation_type: experiment1
+cv_folds: 10
+description: Exp1 sigma sensitivity with AdaptiveFlippedLassoCV (10-fold internal
+  CV), 10 repeats
+experiment: exp1_afl_cv_sigma
+gamma_list:
+- 0.3
+- 0.5
+- 0.7
+- 1.0
+lambda_ridge_list:
+- 1.0
+- 5.0
+- 10.0
+- 50.0
+max_iter: 5000
+n_alpha: 30
+n_features: 500
+n_jobs: -1
+n_nonzero: 20
+n_repeats: 2
+n_samples: 300
+output_dir: "/home/lili/lyn/clear/NLasso/XLasso/experiments/results/afl\u8865/exp1_afl_cv_sigma"
+primary_metric: f1
+random_state: 42
+rho: 0.5
+search_space:
+  sigma:
+  - 0.5
+  - 2
+  - 10
+tol: 0.0001
+use_post_ols_debiasing: false
+weight_clip_max: null
+sigma: 1.0
+lambda_1: 0.01
+lambda_2: 0.01
+group_threshold: 0.7
+config_path: /tmp/exp1_n2.yaml

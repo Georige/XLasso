@@ -1,0 +1,28 @@
+by_f1:
+  rank_1:
+    model: AFL-CV-EN (ElasticNet)
+    f1: 0.6959
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    f1: 0.6516
+by_mse:
+  rank_1:
+    model: AFL-CV-EN (ElasticNet)
+    mse: 41.9082
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    mse: 44.172
+by_fdr:
+  rank_1:
+    model: AFL-CV-EN (ElasticNet)
+    fdr: 0.3107
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    fdr: 0.377
+by_tpr:
+  rank_1:
+    model: AFL-CV-EN (ElasticNet)
+    tpr: 0.7467
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    tpr: 0.7133

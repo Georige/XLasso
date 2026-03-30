@@ -1,0 +1,16 @@
+by_f1:
+  rank_1:
+    model: AFL-CV-1SE
+    f1: 0.6418
+by_mse:
+  rank_1:
+    model: AFL-CV-1SE
+    mse: 6.9477
+by_fdr:
+  rank_1:
+    model: AFL-CV-1SE
+    fdr: 0.4318
+by_tpr:
+  rank_1:
+    model: AFL-CV-1SE
+    tpr: 0.754

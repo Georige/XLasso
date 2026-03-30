@@ -1,0 +1,40 @@
+by_f1:
+  rank_1:
+    model: AFL-CV-EN (ElasticNet)
+    f1: 0.6941
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    f1: 0.6516
+  rank_3:
+    model: AFL-EBIC-Simple
+    f1: 0.3926
+by_mse:
+  rank_1:
+    model: AFL-CV-EN (ElasticNet)
+    mse: 42.1598
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    mse: 44.172
+  rank_3:
+    model: AFL-EBIC-Simple
+    mse: 108.498
+by_fdr:
+  rank_1:
+    model: AFL-CV-EN (ElasticNet)
+    fdr: 0.3112
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    fdr: 0.377
+  rank_3:
+    model: AFL-EBIC-Simple
+    fdr: 0.6585
+by_tpr:
+  rank_1:
+    model: AFL-EBIC-Simple
+    tpr: 0.8667
+  rank_2:
+    model: AFL-CV-EN (ElasticNet)
+    tpr: 0.7433
+  rank_3:
+    model: AdaptiveLassoCV (fixed)
+    tpr: 0.7133

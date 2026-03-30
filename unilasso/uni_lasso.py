@@ -985,6 +985,164 @@ def cv_unilasso(
 
 
 # ------------------------------------------------------------------------------
+# UniLasso with external CV splits (for benchmark compatibility)
+# ------------------------------------------------------------------------------
+def cv_unilasso_with_splits(
+            X: np.ndarray,
+            y: np.ndarray,
+            cv_splits: list,
+            family: str = "gaussian",
+            lmda_min_ratio: float = None,
+            verbose: bool = False,
+            seed: Optional[int] = None
+) -> UniLassoCVResult:
+    """
+    Perform cross-validation UniLasso with EXTERNAL CV splits.
+
+    This version allows external control of CV splits for fair comparison in benchmarks.
+    The LOO fits are computed on the full training data (X), then Lasso CV is performed
+    using the provided cv_splits.
+
+    Args:
+        X: Feature matrix of shape (n, p).
+        y: Response vector of shape (n,).
+        cv_splits: List of (train_idx, val_idx) tuples for cross-validation.
+        family: Family of the response variable ('gaussian', 'binomial', 'cox').
+        lmda_min_ratio: Minimum ratio of the largest to smallest regularization parameter.
+        verbose: Whether to print results.
+        seed: Random seed (used for refit).
+
+    Returns:
+        UniLassoCVResult containing cross-validation results.
+    """
+    from sklearn.linear_model import LassoCV, Lasso
+    from sklearn.preprocessing import StandardScaler
+
+    if lmda_min_ratio is None:
+        lmda_min_ratio = _configure_lmda_min_ratio(X.shape[0], X.shape[1])
+
+    _check_lmda_min_ratio(lmda_min_ratio)
+
+    # Step 1: Prepare input and compute LOO fits
+    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, _, zero_var_idx = _prepare_unilasso_input(X, y, family, None)
+    fit_intercept = False if family == "cox" else True
+
+    n_folds = len(cv_splits)
+
+    # Step 2: Manual CV using sklearn LassoCV with provided splits
+    # Generate alpha path
+    alpha_max = np.max(np.abs(loo_fits.T @ y)) / len(y)
+    alpha_min = alpha_max * lmda_min_ratio
+    alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), 100)[::-1]
+
+    # Standardize features for CV
+    scaler = StandardScaler()
+    loo_fits_scaled = scaler.fit_transform(loo_fits)
+
+    # Manual CV with provided splits
+    mse_path = np.full((len(alphas), n_folds), np.inf)
+    n_nonzero_path = np.zeros((len(alphas), n_folds))
+
+    for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
+        X_tr = loo_fits_scaled[train_idx]
+        X_va = loo_fits_scaled[val_idx]
+        y_tr = y[train_idx]
+        y_va = y[val_idx]
+
+        # Fit lasso path on training fold
+        lasso_path_model = LassoCV(
+            alphas=alphas,
+            cv=None,  # We'll do manual CV
+            fit_intercept=False,
+            max_iter=5000,
+            tol=1e-7,
+            random_state=seed,
+            precompute=False
+        )
+        lasso_path_model.fit(X_tr, y_tr)
+
+        # Predict on validation fold for all alphas
+        # We need to manually compute MSE for each alpha
+        _, coefs_path, _ = Lasso(
+            alpha=alphas[0],  # placeholder
+            fit_intercept=False,
+            max_iter=1,  # just to get the path
+            warm_start=True
+        ).path(X_tr, y_tr, alphas=alphas)
+
+        # Actually, let's use a simpler approach - fit on full path
+        lasso_refit = Lasso(fit_intercept=False, max_iter=5000, tol=1e-7, random_state=seed)
+        lasso_refit.fit(X_tr, y_tr)
+
+        # Get predictions for all alphas using the path
+        # For simplicity, let's just compute MSE for each alpha manually
+        for alpha_idx, alpha in enumerate(alphas):
+            lasso_tmp = Lasso(alpha=alpha, fit_intercept=False, max_iter=5000, tol=1e-7, random_state=seed)
+            lasso_tmp.fit(X_tr, y_tr)
+            y_pred = lasso_tmp.predict(X_va)
+            mse_path[alpha_idx, fold_idx] = np.mean((y_va - y_pred) ** 2)
+            n_nonzero_path[alpha_idx, fold_idx] = np.sum(lasso_tmp.coef_ != 0)
+
+    # Compute mean MSE across folds
+    mean_mse = np.mean(mse_path, axis=1)
+    std_mse = np.std(mse_path, axis=1) / np.sqrt(n_folds)
+
+    # Find best alpha (min MSE)
+    best_alpha_idx = np.argmin(mean_mse)
+    best_alpha = alphas[best_alpha_idx]
+
+    # 1-SE rule: select most sparse model within 1-SE of best
+    threshold = mean_mse[best_alpha_idx] + std_mse[best_alpha_idx]
+    candidates_mask = mean_mse <= threshold
+    if np.any(candidates_mask):
+        # Among candidates, select most sparse (fewest non-zeros)
+        masked_nonzero = np.where(candidates_mask, np.mean(n_nonzero_path, axis=1), np.inf)
+        best_alpha_idx = np.argmin(masked_nonzero)
+        best_alpha = alphas[best_alpha_idx]
+
+    if verbose:
+        print(f"[cv_unilasso_with_splits] Best alpha: {best_alpha:.6f}, MSE: {mean_mse[best_alpha_idx]:.6f}")
+
+    # Step 3: Refit on full data with best alpha
+    scaler_final = StandardScaler()
+    loo_fits_final = scaler_final.fit_transform(loo_fits)
+
+    lasso_final = Lasso(alpha=best_alpha, fit_intercept=fit_intercept, max_iter=5000, tol=1e-7, random_state=seed)
+    lasso_final.fit(loo_fits_final, y)
+
+    # Get coefficients in original scale
+    gamma_hat = lasso_final.coef_ / scaler_final.scale_
+    gamma_0 = lasso_final.intercept_ if fit_intercept else 0.0
+
+    # Adjust intercept for standardization
+    if fit_intercept:
+        gamma_0 = gamma_0 - np.sum(scaler_final.mean_ * gamma_hat)
+
+    # Format output
+    gamma_hat, gamma_0, beta_coefs = _format_output(
+        lasso_final, beta_coefs_fit, beta_intercepts, zero_var_idx, X, fit_intercept
+    )
+
+    unilasso_result = UniLassoCVResult(
+        coefs=gamma_hat,
+        intercept=gamma_0,
+        family=family,
+        gamma=gamma_hat,
+        gamma_intercept=gamma_0,
+        beta=beta_coefs,
+        beta_intercepts=beta_intercepts,
+        lasso_model=lasso_final,
+        lmdas=alphas,
+        avg_losses=mean_mse,
+        cv_plot=None,
+        best_idx=int(best_alpha_idx),
+        best_lmda=best_alpha
+    )
+
+    return unilasso_result
+
+
+# ------------------------------------------------------------------------------
 # Fit UniLasso for a specified regularization path
 # ------------------------------------------------------------------------------
 def fit_unilasso(

@@ -1,0 +1,24 @@
+# Exp3: Twin opposite-sign variables
+experiment: exp3_twin
+description: "Exp3 Twin variables (opposite signs)"
+algo: adaptive_flipped_lasso_cv
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: twin
+rho: 0.0
+random_state: 42
+n_repeats: 10
+cv_folds: 5
+search_space:
+  sigma: [0.5, 1.0, 2.0, 5.0, 10.0]
+compare_models:
+  - algo: aflclassifier_cv
+    display: AFL-CV-1SE
+    params:
+      lambda_ridge_list: [0.5, 1.0, 2.0]
+      gamma_list: [0.3, 0.5, 0.7]
+      cv: 10
+      n_alpha: 50
+    cv: true
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/benchmark

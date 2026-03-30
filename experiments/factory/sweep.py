@@ -733,6 +733,10 @@ def _run_single_benchmark_task(task):
         use_cv = model_info.get("cv", False)
         model_params = model_info.get("params", {})
 
+        # Ensure numeric params are parsed as float (YAML may parse "1e-5" as string in nested context)
+        if "eps" in model_params and isinstance(model_params["eps"], str):
+            model_params = {**model_params, "eps": float(model_params["eps"])}
+
         trial_config = {
             **config,
             **model_params,
@@ -933,23 +937,29 @@ def run_benchmark_trial_with_splits(config, parent_dir, X, y, beta_true, splits)
     y_train, y_val = y[train_idx], y[val_idx]
 
     # ============================================================
-    # Step 2: Generate K-fold CV splits on 80% train
+    # Step 2: Generate K-fold CV splits on 80% train (only if algorithm needs them)
     # ============================================================
-    kfold = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-    cv_splits = list(kfold.split(X_train))  # List of (train_idx, val_idx) within X_train
+    # Check if algorithm supports cv_splits parameter BEFORE creating KFold
+    algo = algo_class(**algo_params)
+    supports_cv_splits = 'cv_splits' in inspect.signature(algo.fit).parameters
+
+    if supports_cv_splits:
+        # Only create CV splits if the algorithm needs them
+        if n_folds < 2:
+            raise ValueError(f"Algorithm {algo_name} requires n_folds >= 2 for internal CV, but got n_folds={n_folds}")
+        kfold = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        cv_splits = list(kfold.split(X_train))  # List of (train_idx, val_idx) within X_train
+    else:
+        cv_splits = None
 
     # ============================================================
     # Step 3: Algorithm uses K-fold CV for hyperparameter selection
     # ============================================================
-    # Check if algorithm supports cv_splits parameter
-    algo = algo_class(**algo_params)
-    supports_cv_splits = 'cv_splits' in inspect.signature(algo.fit).parameters
-
     start_time = time.time()
     if supports_cv_splits:
         algo.fit(X_train, y_train, cv_splits=cv_splits)
     else:
-        # Fallback: algorithm creates its own CV splits
+        # Algorithm doesn't use CV splits (e.g., AFL-EBIC-Simple fits on all data)
         algo.fit(X_train, y_train)
     train_time = time.time() - start_time
 
@@ -981,6 +991,28 @@ def run_benchmark_trial_with_splits(config, parent_dir, X, y, beta_true, splits)
         "n_folds_completed": len(metrics_list),
         "individual_metrics": metrics_list,
     }
+
+
+def _parse_yaml_null(value):
+    """Convert YAML 'null' string (or Python None) to Python None.
+
+    Handles cases where:
+    - PyYAML parses `null` as Python None (ideal case)
+    - PyYAML parses `null` as string 'null' (some PyYAML versions)
+    - Value is already Python None
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and value.lower() in ('null', 'none', '~'):
+        return None
+    return value
+
+
+def _parse_list_with_null(lst):
+    """Convert 'null' strings in a list to Python None."""
+    if lst is None:
+        return None
+    return [_parse_yaml_null(x) for x in lst]
 
 
 def get_benchmark_algo_params(algo_name, config):
@@ -1083,6 +1115,29 @@ def get_benchmark_algo_params(algo_name, config):
             "use_post_ols_debiasing": config.get("use_post_ols_debiasing", False),
             "auto_tune_collinearity": config.get("auto_tune_collinearity", True),
             "weight_clip_max": config.get("weight_clip_max", 100.0),
+            "eps": float(config.get("eps", 1e-5)),  # Ensure float (YAML may parse 1e-5 as string)
+            "n_jobs": config.get("n_jobs", -1),
+        })
+    elif algo_name == "adaptive_flipped_lasso_cv_en":
+        # Elastic Net first stage variant - no weight clipping, EN prior selection
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 1.0, 5.0, 10.0]),
+            "l1_ratio_list": config.get("l1_ratio_list", [0.1, 0.5, 0.9]),
+            "gamma_list": config.get("gamma_list", [0.3, 0.5, 0.7, 1.0]),
+            "cv": config.get("cv_folds", 5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 2000),
+            "tol": config.get("tol", 0.0001),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 42),
+            "verbose": config.get("verbose", False),
+            "use_post_ols_debiasing": config.get("use_post_ols_debiasing", False),
+            "auto_tune_collinearity": config.get("auto_tune_collinearity", True),
+            "weight_clip_max": _parse_yaml_null(config.get("weight_clip_max", None)),  # None = no clipping
+            "eps": float(config.get("eps", 1e-5)),  # Ensure float (YAML may parse 1e-5 as string)
+            "n_jobs": config.get("n_jobs", -1),
         })
     elif algo_name == "adaptive_flipped_lasso_ebic":
         params.update({
@@ -1093,6 +1148,24 @@ def get_benchmark_algo_params(algo_name, config):
             "n_alpha": config.get("n_alpha", 100),
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
+        })
+    elif algo_name == "adaptive_flipped_lasso_ebic_simple":
+        # EBIC with simple data flow - no CV, full data training, direct output
+        params.update({
+            "lambda_ridge": config.get("lambda_ridge", 1.0),
+            "gamma_list": config.get("gamma_list", [0.3, 0.5, 0.7, 1.0]),
+            "tau_clip_list": _parse_list_with_null(config.get("tau_clip_list", [1.0, 10.0, 100.0, None])),
+            "ebic_gamma": config.get("ebic_gamma", 0.5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 2000),
+            "tol": config.get("tol", 0.0001),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 42),
+            "verbose": config.get("verbose", False),
+            "eps": float(config.get("eps", 1e-5)),  # Ensure float (YAML may parse 1e-5 as string)
+            "n_jobs": config.get("n_jobs", -1),
         })
     elif algo_name == "aflclassifier_ebic":
         params.update({
@@ -1118,6 +1191,7 @@ def get_benchmark_algo_params(algo_name, config):
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
             "use_1se": True,  # Enable 1-SE rule
+            "n_jobs": config.get("n_jobs", -1),
         })
     elif algo_name == "lasso":
         params.update({

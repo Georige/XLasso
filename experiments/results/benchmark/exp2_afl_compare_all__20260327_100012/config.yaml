@@ -20,7 +20,7 @@ compare_models:
     lambda_ridge: 1.0
     lambda_: 1.0
     gamma: 0.5
-  cv: false
+  cv: false 
 - algo: aflclassifier_cv
   display: AFL-CV-1SE
   params:

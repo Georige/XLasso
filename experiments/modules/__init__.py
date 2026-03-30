@@ -42,7 +42,9 @@ from .NLasso import (
     NLasso, NLassoClassifier, NLassoCV, NLassoClassifierCV,
     AdaptiveFlippedLasso, AdaptiveFlippedLassoClassifier,
     AdaptiveFlippedLassoCV, AdaptiveFlippedLassoClassifierEBIC,
-    AdaptiveFlippedLassoEBIC,
+    AdaptiveFlippedLassoEBIC, AdaptiveFlippedLassoCV_EN,
+    AdaptiveFlippedLassoCV_ENClassifier,
+    AdaptiveFlippedLassoEBIC_Simple,
 )
 from .NLasso import metrics as nlasso_metrics
 
@@ -517,6 +519,8 @@ ALGO_REGISTRY = {
     "aflclassifier": AdaptiveFlippedLassoClassifier,
     "aflclassifier_cv": AdaptiveFlippedLassoCV,
     "aflclassifier_ebic": AdaptiveFlippedLassoClassifierEBIC,
+    "adaptive_flipped_lasso_cv_en": AdaptiveFlippedLassoCV_EN,
+    "adaptive_flipped_lasso_cv_en_classifier": AdaptiveFlippedLassoCV_ENClassifier,
     # XLasso (fit_uni/cv_uni)
     "xlasso": XLasso,
     "xlasso_cv": XLassoCV,
@@ -548,6 +552,8 @@ __all__ = [
     "AdaptiveFlippedLassoCV",
     "AdaptiveFlippedLassoClassifierEBIC",
     "AdaptiveFlippedLassoEBIC",
+    "AdaptiveFlippedLassoCV_EN",
+    "AdaptiveFlippedLassoCV_ENClassifier",
     "nlasso_metrics",
     # Other Lasso variants
     "AdaptiveLasso",

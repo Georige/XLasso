@@ -8,6 +8,7 @@ from sklearn.utils.validation import check_X_y, check_array
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import check_cv
 from sklearn.base import clone
+from joblib import Parallel, delayed
 from .base import BaseLasso
 
 
@@ -234,13 +235,14 @@ class AdaptiveLassoCV(AdaptiveLasso):
         eps = 1e-10
 
         # ============================================================
-        # 阶段一：K折严格内部寻优（严格隔离，无泄露）
+        # 阶段一：K折严格内部寻优（严格隔离，无泄露）- 并行版本
         # ============================================================
-        for fold_idx, (train_idx, val_idx) in enumerate(splits):
+        def _compute_single_fold(fold_idx, train_idx, val_idx):
+            """Compute error matrix for a single fold (used for parallel execution)."""
             X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
 
-            # 每个fold独立标准化（仅用训练折fit，避免验证集泄露）
+            # 每个fold独立标准化
             if self.standardize:
                 scaler_fold = StandardScaler()
                 X_tr = scaler_fold.fit_transform(X_tr_raw)
@@ -254,10 +256,7 @@ class AdaptiveLassoCV(AdaptiveLasso):
             else:
                 sw_tr = None
 
-            # ---------------------------------------------------------
-            # 第一步：在训练折上计算初始beta_ols（严格隔离！）
-            # 关键：不能使用任何验证集的信息
-            # ---------------------------------------------------------
+            # 第一步：在训练折上计算初始beta_ols（严格隔离）
             if self.initial_estimator is not None:
                 estimator = clone(self.initial_estimator)
                 estimator.fit(X_tr, y_tr, sample_weight=sw_tr)
@@ -278,19 +277,22 @@ class AdaptiveLassoCV(AdaptiveLasso):
                     lr.fit(X_tr, y_tr, sample_weight=sw_tr)
                     beta_ols = lr.coef_[0]
 
-            # 计算自适应权重（基于训练折的beta_ols）
+            # 计算自适应权重
             abs_beta = np.clip(np.abs(beta_ols), eps, None)
 
-            # 对每个gamma分别计算其专属的alpha搜索路径
+            # 存储该 fold 的结果
+            fold_errors = np.full((n_gamma, n_alpha), np.inf)
+            fold_nselected = np.zeros((n_gamma, n_alpha))
+
+            # 对每个gamma分别计算
             for gamma_idx, gamma in enumerate(self.gammas):
-                # 使用指定gamma计算权重
                 weights = 1.0 / (abs_beta ** gamma)
 
-                # 空间重构：分别扭曲训练折和验证折
+                # 空间重构
                 X_adaptive_tr = X_tr / weights
                 X_adaptive_va = X_va / weights
 
-                # alpha搜索路径（每个gamma有自己专属的alpha_max）
+                # alpha搜索路径
                 if self.alphas is None:
                     if self.family.lower() == "gaussian":
                         lambda_max = np.max(np.abs(X_adaptive_tr.T @ y_tr)) / len(y_tr)
@@ -330,16 +332,30 @@ class AdaptiveLassoCV(AdaptiveLasso):
                     # 计算验证集误差
                     if self.scoring == 'neg_mean_squared_error':
                         mse = np.mean((y_va - y_pred_va) ** 2)
-                        error_matrix[gamma_idx, alpha_idx, fold_idx] = mse
+                        fold_errors[gamma_idx, alpha_idx] = mse
                     elif self.scoring == 'roc_auc' and self.family.lower() == "binomial":
                         try:
                             auc = roc_auc_score(y_va, y_pred_va)
-                            error_matrix[gamma_idx, alpha_idx, fold_idx] = -auc  # 负值因为我们要最小化
+                            fold_errors[gamma_idx, alpha_idx] = -auc
                         except:
-                            error_matrix[gamma_idx, alpha_idx, fold_idx] = np.inf
+                            fold_errors[gamma_idx, alpha_idx] = np.inf
 
                     # 追踪非零系数数量
-                    nselected_matrix[gamma_idx, alpha_idx, fold_idx] = np.sum(coef_scaled != 0)
+                    fold_nselected[gamma_idx, alpha_idx] = np.sum(coef_scaled != 0)
+
+            return fold_idx, fold_errors, fold_nselected
+
+        # 使用 joblib 并行执行所有 fold
+        n_jobs = self.n_jobs if self.n_jobs is not None else -1
+        parallel_results = Parallel(n_jobs=n_jobs, verbose=0)(
+            delayed(_compute_single_fold)(fold_idx, train_idx, val_idx)
+            for fold_idx, (train_idx, val_idx) in enumerate(splits)
+        )
+
+        # 收集结果
+        for fold_idx, fold_errors, fold_nselected in parallel_results:
+            error_matrix[:, :, fold_idx] = fold_errors
+            nselected_matrix[:, :, fold_idx] = fold_nselected
 
         # ============================================================
         # 阶段二：选拔最优参数（1-SE法则）

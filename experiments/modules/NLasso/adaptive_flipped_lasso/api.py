@@ -5,7 +5,7 @@ AdaptiveFlippedLasso API 层
 import numpy as np
 from sklearn.model_selection import KFold
 from sklearn.utils.validation import check_is_fitted
-from .base import BaseAdaptiveFlippedLasso, AdaptiveFlippedLassoRegressor, AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV, AdaptiveFlippedLassoEBIC
+from .base import BaseAdaptiveFlippedLasso, AdaptiveFlippedLassoRegressor, AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV, AdaptiveFlippedLassoEBIC, AdaptiveFlippedLassoCV_EN
 
 
 class AdaptiveFlippedLasso(AdaptiveFlippedLassoRegressor):
@@ -118,6 +118,43 @@ class AdaptiveFlippedLassoClassifierEBIC(AdaptiveFlippedLassoClassifier, Adaptiv
 
         # 复用父类 fit 逻辑
         return super().fit(X, y_continuous, sample_weight)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        check_is_fitted(self, 'is_fitted_')
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        check_is_fitted(self, 'is_fitted_')
+        z = X @ self.coef_ + self.intercept_
+        proba_1 = 1 / (1 + np.exp(-np.clip(z, -30, 30)))
+        return np.column_stack([1 - proba_1, proba_1])
+
+    def score(self, X: np.ndarray, y: np.ndarray) -> float:
+        from sklearn.metrics import accuracy_score
+        return accuracy_score(y, self.predict(X))
+
+
+class AdaptiveFlippedLassoCV_ENClassifier(AdaptiveFlippedLassoClassifier, AdaptiveFlippedLassoCV_EN):
+    """
+    带交叉验证的 AdaptiveFlippedLassoCV_EN 分类器（二分类）
+
+    使用 Elastic Net 作为第一阶段先验的二分类版本。
+    """
+
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
+        from sklearn.utils.validation import check_X_y
+
+        X, y = check_X_y(X, y, accept_sparse=['csr', 'csc'], ensure_2d=True)
+        self.n_features_in_ = X.shape[1]
+        self.classes_ = np.unique(y)
+
+        if len(self.classes_) != 2:
+            raise ValueError("AdaptiveFlippedLassoCV_ENClassifier only supports binary classification")
+
+        y_continuous = (y == self.classes_[1]).astype(np.float64)
+
+        # 显式调用 AdaptiveFlippedLassoCV_EN.fit()
+        return AdaptiveFlippedLassoCV_EN.fit(self, X, y_continuous, sample_weight)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         check_is_fitted(self, 'is_fitted_')

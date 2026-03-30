@@ -1,0 +1,2 @@
+model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std,sparsity_mean,sparsity_std,n_selected_mean,n_selected_std
+AdaptiveFlippedLassoCV,0.6474,0.2091,30.9273,45.7844,0.808,0.2581,0.4511,0.1838,0.5489,0.1838,0.808,0.2581,0.7926,0.2537,0.9398,0.0159,30.12,7.9442

@@ -1,0 +1,28 @@
+by_f1:
+  rank_1:
+    model: AdaptiveFlippedLassoCV
+    f1: 0.5941
+  rank_2:
+    model: AdaptiveLassoCV
+    f1: 0.2949
+by_mse:
+  rank_1:
+    model: AdaptiveFlippedLassoCV
+    mse: 40.1231
+  rank_2:
+    model: AdaptiveLassoCV
+    mse: 241.4289
+by_fdr:
+  rank_1:
+    model: AdaptiveLassoCV
+    fdr: 0.0444
+  rank_2:
+    model: AdaptiveFlippedLassoCV
+    fdr: 0.4859
+by_tpr:
+  rank_1:
+    model: AdaptiveFlippedLassoCV
+    tpr: 0.7667
+  rank_2:
+    model: AdaptiveLassoCV
+    tpr: 0.19

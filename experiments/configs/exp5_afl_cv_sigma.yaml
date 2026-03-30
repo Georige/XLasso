@@ -1,18 +1,18 @@
-# Exp5 AdaptiveFlippedLassoCV Sigma Sensitivity Benchmark
+# Exp5 AFL-CV-EN vs AdaptiveLassoCV Sigma Sensitivity Benchmark
 # ======================================================
 # Exp5 settings: Perfect Masking trap, n=300, p=1000
 # 10 pairs twin variables with ρ=0.8, β_{2t-1}=2.0, β_{2t}=-2.5
 # Core challenge: designed to make marginal correlation of true signals zero
 # Family: gaussian
-# Method: adaptive_flipped_lasso_cv with internal 5-fold CV
-# Repeats: 10 (external repeats for each sigma value)
+# Methods: AFL-CV-EN (ElasticNet prior) vs AdaptiveLassoCV
+# Repeats: 5 (external repeats for each sigma value)
 #
 # Usage:
 #   python factory/sweep.py benchmark --config configs/exp5_afl_cv_sigma.yaml
 
-experiment: exp5_afl_cv_sigma
-description: "Exp5 sigma sensitivity with AdaptiveFlippedLassoCV (5-fold internal CV), 10 repeats"
-algo: adaptive_flipped_lasso_cv
+experiment: exp5_afl_cv_en_vs_adaptive
+description: "Exp5 sigma sensitivity: AFL-CV-EN (ElasticNet prior) vs AdaptiveLassoCV, 5 repeats"
+algo: adaptive_flipped_lasso_cv_en
 
 # Data generation parameters (Exp5 settings)
 n_samples: 300
@@ -24,29 +24,37 @@ family: gaussian
 random_state: 42
 
 # External experiment settings
-n_repeats: 10
-cv_folds: 5
+n_repeats: 5
+cv_folds: 10
+n_jobs: -1
 
 # Primary metric
 primary_metric: f1
 
 # Sigma values to test
 search_space:
-  sigma: [0.5, 1.0, 2.0, 5.0, 10.0]
+  sigma: [0.5, 2.0, 10.0]
 
-# AdaptiveFlippedLassoCV parameters (uses internal 5-fold CV)
-lambda_ridge_list: [0.1, 1.0, 10.0]
-gamma_list: [0.5, 1.0, 2.0]
+# AdaptiveFlippedLassoCV_EN parameters (ElasticNet first stage, no weight clipping)
+lambda_ridge_list: [0.1, 1.0, 5.0, 10.0]
+l1_ratio_list: [0.1, 0.5, 0.9]
+gamma_list: [0.3, 0.5, 0.7, 1.0, 2.0, 3.0]
 alpha_min_ratio: 0.0001
-n_alpha: 50
-max_iter: 2000
+n_alpha: 30
+max_iter: 100000
 tol: 0.0001
+use_post_ols_debiasing: false
+auto_tune_collinearity: true
+weight_clip_max: null
+eps: 1.0e-5
 
-# Only run AdaptiveFlippedLassoCV, no model comparison
 compare_models:
-  - algo: adaptive_flipped_lasso_cv
-    display: AdaptiveFlippedLassoCV
+  - algo: adaptive_flipped_lasso_cv_en
+    display: AFL-CV-EN (ElasticNet)
+    cv: true
+  - algo: adaptive_lasso_cv
+    display: AdaptiveLassoCV (fixed)
     cv: true
 
 # Output settings
-output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/exp5_afl_cv_sigma
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/exp5_afl_cv_en_vs_adaptive
