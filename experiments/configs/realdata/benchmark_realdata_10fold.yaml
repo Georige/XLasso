@@ -1,0 +1,64 @@
+# Real Data Benchmark: PFL vs AFL Family vs Others
+# Data Flow: seed=42+repeat -> 80/20 split -> 10-fold CV on training -> algo.fit(X_train, y_train, cv_splits)
+experiment: benchmark_realdata_10fold
+description: "Compare BAFL, AFL family, Lasso on riboflavin with 10-fold CV"
+dataset: riboflavin
+mode: random
+
+# Experiment settings
+n_iter: 100
+train_ratio: 0.8
+seed_base: 42
+cv_folds: 10
+output_dir: experiments/results/realdata/benchmark_10fold
+
+# Preprocessing (optional)
+preprocess:
+  method: standard  # standard, minmax, robust, or none
+
+# Compare models
+compare_models:
+  - algo: pfl_regressor_cv
+    display: PFLRegressorCV (BAFL, gamma=1.0, cap=10.0)
+    params:
+      cv: 10
+      lambda_ridge_list: [0.1, 1.0, 10.0, 100.0]
+      alpha_min_ratio: 0.0001
+      n_alpha: 100
+      max_iter: 10000
+      tol: 0.0001
+      random_state: 2026
+      gamma: 1.0
+      weight_cap: 10.0
+
+  - algo: adaptive_lasso_cv
+    display: AdaptiveLassoCV (fixed)
+    params:
+      cv: 10
+      max_iter: 10000
+      tol: 0.0001
+      random_state: 42
+
+  - algo: cv_unilasso
+    display: UniLassoCV
+    params:
+      n_folds: 10
+      lmda_min_ratio: 0.0001
+      use_1se: true
+      random_state: 42
+
+  - algo: lasso_cv
+    display: LassoCV
+    params:
+      alphas: [0.0001, 0.001, 0.01, 0.1, 1.0]
+      cv: 10
+      max_iter: 20000
+      random_state: 42
+
+  - algo: relaxed_lasso_1se
+    display: RelaxedLasso (1-SE rule)
+    params:
+      cv: 10
+      random_state: 42
+      eps: 0.001
+      n_alphas: 100

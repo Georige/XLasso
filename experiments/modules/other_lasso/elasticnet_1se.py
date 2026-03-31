@@ -5,10 +5,13 @@ ElasticNet with 1-SE Rule Implementation
 """
 import numpy as np
 from sklearn.linear_model import ElasticNetCV, ElasticNet
+from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.preprocessing import StandardScaler
+from joblib import Parallel, delayed
 import warnings
 
 
-class ElasticNet1SE:
+class ElasticNet1SE(BaseEstimator, RegressorMixin):
     """
     ElasticNet with 1-SE Rule for sparse feature selection.
 
@@ -45,13 +48,16 @@ class ElasticNet1SE:
         self.l1_ratio_: float = None
         self.n_iter_: int = None
 
-    def fit(self, X, y):
+    def fit(self, X, y, cv_splits=None):
         """
         使用 1-SE Rule 拟合 ElasticNet 模型。
 
         参数:
             X: 特征矩阵 (n_samples, n_features)
             y: 目标向量 (n_samples,)
+            cv_splits: list of tuples, optional
+                Pre-generated CV splits (list of (train_idx, val_idx) tuples).
+                If provided, uses these splits instead of creating new KFold.
 
         返回:
             self
@@ -62,7 +68,133 @@ class ElasticNet1SE:
         n_samples, n_features = X.shape
         self.n_features_in_ = n_features
 
-        # 1. 调用 sklearn 的底层高效 CV
+        if cv_splits is not None:
+            # === 使用外部提供的 CV splits ===
+            self._fit_with_splits(X, y, cv_splits)
+        else:
+            # === 使用内部 CV (原始行为) ===
+            self._fit_internal_cv(X, y)
+
+        return self
+
+    def _fit_with_splits(self, X, y, cv_splits):
+        """使用外部提供的 cv_splits 进行 1-SE 寻优。"""
+        n_folds = len(cv_splits)
+        n_l1 = len(self.l1_ratios)
+
+        if self.verbose:
+            print(f"正在进行 ElasticNet 2D 交叉验证搜索 (external splits, {n_folds} folds)...")
+
+        # Compute alpha grid using lasso_path (same logic as ElasticNetCV)
+        # First, fit a Lasso to get alpha_max and alpha_min
+        lasso_tmp = ElasticNet(l1_ratio=1.0, alpha=0.001, max_iter=self.max_iter, random_state=self.random_state)
+        lasso_tmp.fit(X, y)
+        alpha_max = np.abs(lasso_tmp.coef_).max() if np.abs(lasso_tmp.coef_).max() > 0 else 1.0
+        alpha_min = alpha_max * 0.0001
+        alphas = np.linspace(alpha_max, alpha_min, 100)
+
+        # mse_path shape: (n_l1, n_alphas, n_folds)
+        mse_path = np.zeros((n_l1, len(alphas), n_folds))
+
+        for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+            # Standardize within fold (only if needed)
+            scaler = StandardScaler()
+            X_train_s = scaler.fit_transform(X_train)
+            X_val_s = scaler.transform(X_val)
+
+            # === Fold 串行，alpha 并行 ===
+            def _eval_enet(l1_ratio, alpha, X_tr, y_tr, X_va, y_va):
+                model = ElasticNet(
+                    alpha=alpha,
+                    l1_ratio=l1_ratio,
+                    max_iter=self.max_iter,
+                    random_state=self.random_state,
+                    fit_intercept=True
+                )
+                model.fit(X_tr, y_tr)
+                y_pred = model.predict(X_va)
+                return float(np.mean((y_va - y_pred) ** 2))
+
+            # Build (l1_idx, alpha_idx, l1_ratio, alpha) task list
+            tasks = [
+                (l1_idx, alpha_idx, l1_ratio, alpha)
+                for l1_idx, l1_ratio in enumerate(self.l1_ratios)
+                for alpha_idx, alpha in enumerate(alphas)
+            ]
+
+            mse_results = Parallel(n_jobs=-1, prefer="threads", verbose=0)(
+                delayed(_eval_enet)(l1_ratio, alpha, X_train_s, y_train, X_val_s, y_val)
+                for (_, _, l1_ratio, alpha) in tasks
+            )
+
+            for (l1_idx, alpha_idx, _, _), mse_val in zip(tasks, mse_results):
+                mse_path[l1_idx, alpha_idx, fold_idx] = mse_val
+
+        # Compute mean and SE across folds
+        mean_mse_path = mse_path.mean(axis=-1)
+        std_mse_path = mse_path.std(axis=-1)
+        se_mse_path = std_mse_path / np.sqrt(n_folds)
+
+        # Find global optimum
+        best_l1_idx, best_alpha_idx = np.unravel_index(
+            np.argmin(mean_mse_path), mean_mse_path.shape
+        )
+        best_mse = mean_mse_path[best_l1_idx, best_alpha_idx]
+        best_se = se_mse_path[best_l1_idx, best_alpha_idx]
+        best_l1_ratio = self.l1_ratios[best_l1_idx]
+
+        # 1-SE rule
+        threshold_1se = best_mse + best_se
+        mse_for_best_l1 = mean_mse_path[best_l1_idx]
+        alphas_for_best_l1 = alphas
+
+        candidates_mask = mse_for_best_l1 <= threshold_1se
+        candidate_indices = np.where(candidates_mask)[0]
+
+        if len(candidate_indices) > 0:
+            n_nonzero_list = []
+            for idx in candidate_indices:
+                alpha = alphas_for_best_l1[idx]
+                model_tmp = ElasticNet(
+                    alpha=alpha,
+                    l1_ratio=best_l1_ratio,
+                    max_iter=self.max_iter,
+                    random_state=self.random_state
+                )
+                model_tmp.fit(X, y)
+                n_nonzero = np.sum(model_tmp.coef_ != 0)
+                n_nonzero_list.append(n_nonzero)
+
+            best_candidate_idx = candidate_indices[np.argmin(n_nonzero_list)]
+            alpha_1se = alphas_for_best_l1[best_candidate_idx]
+        else:
+            alpha_1se = alphas_for_best_l1[best_alpha_idx]
+
+        if self.verbose:
+            print(f"全局最小 MSE 对应的 alpha: {alphas[best_alpha_idx]:.6f}")
+            print(f"严格 1-SE Rule 选出的 alpha: {alpha_1se:.6f}")
+            print(f"锁定的最佳 l1_ratio: {best_l1_ratio}")
+
+        # Final refit on all data
+        final_model = ElasticNet(
+            alpha=alpha_1se,
+            l1_ratio=best_l1_ratio,
+            max_iter=self.max_iter,
+            random_state=self.random_state
+        )
+        final_model.fit(X, y)
+
+        self.coef_ = final_model.coef_
+        self.intercept_ = final_model.intercept_
+        self.alpha_ = alpha_1se
+        self.l1_ratio_ = best_l1_ratio
+        self.n_iter_ = final_model.n_iter_
+
+    def _fit_internal_cv(self, X, y):
+        """使用 sklearn ElasticNetCV 的内部 CV (原始行为)。"""
         if self.verbose:
             print("正在进行 ElasticNet 2D 交叉验证搜索...")
 
@@ -74,20 +206,15 @@ class ElasticNet1SE:
             max_iter=self.max_iter
         )
 
-        # 忽略高维下偶尔的收敛警告，保持输出清爽
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             enet_cv.fit(X, y)
 
         # --- 下面进入 1-SE 寻优逻辑 ---
-
-        # mse_path_ 的形状是 (n_l1_ratio, n_alphas, n_folds)
         mean_mse_path = enet_cv.mse_path_.mean(axis=-1)
         std_mse_path = enet_cv.mse_path_.std(axis=-1)
-        # 将标准差(SD)转为标准误(SE)
         se_mse_path = std_mse_path / np.sqrt(self.cv_folds)
 
-        # 2. 找到全局的绝对最优 (Min-MSE)
         best_l1_idx, best_alpha_idx = np.unravel_index(
             np.argmin(mean_mse_path), mean_mse_path.shape
         )
@@ -95,25 +222,20 @@ class ElasticNet1SE:
         best_mse = mean_mse_path[best_l1_idx, best_alpha_idx]
         best_se = se_mse_path[best_l1_idx, best_alpha_idx]
 
-        # 3. 锁定最佳的 l1_ratio
         if isinstance(enet_cv.l1_ratio_, np.ndarray):
             best_l1_ratio = enet_cv.l1_ratio_[best_l1_idx]
         else:
             best_l1_ratio = self.l1_ratios[best_l1_idx]
 
-        # 4. 提取这条最优 l1_ratio 路径上的所有 alpha 和 mse
         alphas_for_best_l1 = enet_cv.alphas_[best_l1_idx]
         mse_for_best_l1 = mean_mse_path[best_l1_idx]
 
-        # 5. 计算 1-SE 阈值上限 (误差越小越好，所以容忍度是加上 1 个 SE)
         threshold_1se = best_mse + best_se
 
-        # 6. 找出及格的 alpha，并选出非零系数最少的
         candidates_mask = mse_for_best_l1 <= threshold_1se
         candidate_indices = np.where(candidates_mask)[0]
 
         if len(candidate_indices) > 0:
-            # 对每个候选 alpha 实际 fit 一次，数非零系数，选最稀疏的
             n_nonzero_list = []
             for idx in candidate_indices:
                 alpha = alphas_for_best_l1[idx]
@@ -137,7 +259,6 @@ class ElasticNet1SE:
             print(f"严格 1-SE Rule 选出的 alpha: {alpha_1se:.6f} (模型更精简)")
             print(f"锁定的最佳 l1_ratio: {best_l1_ratio}")
 
-        # 7. 拿着选出的参数，在全量数据上终极重拟合 (Final Refit)
         final_model = ElasticNet(
             alpha=alpha_1se,
             l1_ratio=best_l1_ratio,
@@ -151,8 +272,6 @@ class ElasticNet1SE:
         self.alpha_ = alpha_1se
         self.l1_ratio_ = best_l1_ratio
         self.n_iter_ = final_model.n_iter_
-
-        return self
 
     def predict(self, X):
         """使用拟合的模型进行预测。"""

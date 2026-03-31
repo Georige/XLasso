@@ -23,6 +23,10 @@ from .adaptive_flipped_lasso import (
     ConfidenceCalibratedAFLClassifier,
     APAFLRegressor,
     APAFLClassifier,
+    PFLRegressor,
+    PFLClassifier,
+    PFLRegressorCV,
+    PFLClassifierCV,
 )
 
 __all__ = [
@@ -46,6 +50,11 @@ __all__ = [
     # AP-AFL
     'APAFLRegressor',
     'APAFLClassifier',
+    # PFL (Pure Flipped Lasso)
+    'PFLRegressor',
+    'PFLClassifier',
+    'PFLRegressorCV',
+    'PFLClassifierCV',
     # Metrics
     'metrics'
 ]

@@ -383,6 +383,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.n_jobs = n_jobs
 
         self._init_fitted_attributes()
+        self.signs_ = None
 
     def get_params(self, deep: bool = True) -> dict:
         params = {
@@ -490,6 +491,38 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
         nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
 
+        # ============================================================
+        # Stage 0: 全局统一 alpha 网格（所有 fold 共用）
+        # ============================================================
+        # 用全局数据生成搜索空间（仅用于定义网格，不参与 fold 内计算）
+        if self.standardize:
+            scaler_global = StandardScaler(copy=False)
+            X_std = scaler_global.fit_transform(X)
+        else:
+            X_std = X
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ridge_global = RidgeCV(alphas=self.lambda_ridge_list, cv=3,
+                                   scoring='neg_mean_squared_error')
+            ridge_global.fit(X_std, y)
+        beta_ridge_g = ridge_global.coef_
+
+        signs_g = np.sign(beta_ridge_g)
+        signs_g[signs_g == 0] = 1.0
+
+        raw_weights_g = 1.0 / (np.abs(beta_ridge_g) + eps) ** 1.0
+        min_w_g = np.min(raw_weights_g)
+        w_norm_g = raw_weights_g / min_w_g
+        clip_max_g = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+        weights_g = np.clip(w_norm_g, 1.0, clip_max_g)
+
+        X_adaptive_g = (X_std * signs_g) / weights_g
+
+        alpha_max = np.max(np.abs(X_adaptive_g.T @ y)) / len(y)
+        alpha_min = alpha_max * self.alpha_min_ratio
+        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
         # 并行化 fold 处理：每个 fold 独立计算
         def _compute_single_fold_errors(fold_idx, train_idx, val_idx):
             """Compute error matrix for a single fold (used for parallel execution)."""
@@ -529,12 +562,7 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
                 X_adaptive_tr = (X_tr * signs_fold) / weights
                 X_adaptive_va = (X_va * signs_fold) / weights
 
-                # alpha 搜索路径
-                alpha_max = np.max(np.abs(X_adaptive_tr.T @ y_tr)) / len(y_tr)
-                alpha_min = alpha_max * self.alpha_min_ratio
-                alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
-
-                # lasso_path
+                # lasso_path（使用全局统一 alphas）
                 _, coefs_path, _ = lasso_path(
                     X_adaptive_tr, y_tr,
                     alphas=alphas,
@@ -1659,6 +1687,7 @@ class AdaptiveFlippedLassoCV_EN(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.n_jobs = n_jobs
 
         self._init_fitted_attributes()
+        self.signs_ = None
 
     def get_params(self, deep: bool = True) -> dict:
         params = {
@@ -1849,13 +1878,19 @@ class AdaptiveFlippedLassoCV_EN(BaseAdaptiveFlippedLasso, RegressorMixin):
 
         return best_lambda, best_l1
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None, beta_true: np.ndarray = None):
         """
         拟合 AdaptiveFlippedLassoCV_EN 模型（Per-fold ENCV + 严格数据隔离）
 
         Stage 1: 折内 ENCV 评估 (gamma, alpha) 网格
         Stage 2: 全局 1-SE 选拔 (best_gamma, best_alpha)
         Stage 3: 全量数据终极拟合
+
+        Parameters
+        ----------
+        beta_true : np.ndarray, optional
+            真实系数向量（仅用于诊断输出）。若提供且 verbose=True，
+            则打印 ENCV 先验在真信号上的符号准确率。
         """
         from sklearn.model_selection import KFold
 
@@ -1891,6 +1926,38 @@ class AdaptiveFlippedLassoCV_EN(BaseAdaptiveFlippedLasso, RegressorMixin):
 
         error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
         nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
+
+        # ============================================================
+        # Stage 0: 全局统一 alpha 网格（所有 fold 共用）
+        # ============================================================
+        # 用全局数据生成搜索空间（仅用于定义网格，不参与 fold 内计算）
+        if self.standardize:
+            scaler_global = StandardScaler(copy=False)
+            X_std = scaler_global.fit_transform(X)
+        else:
+            X_std = X
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ridge_global = RidgeCV(alphas=self.lambda_ridge_list, cv=3,
+                                  scoring='neg_mean_squared_error')
+            ridge_global.fit(X_std, y)
+        beta_ridge_g = ridge_global.coef_
+
+        signs_g = np.sign(beta_ridge_g)
+        signs_g[signs_g == 0] = 1.0
+
+        raw_weights_g = 1.0 / (np.abs(beta_ridge_g) + eps) ** 1.0
+        min_w_g = np.min(raw_weights_g)
+        w_norm_g = raw_weights_g / min_w_g
+        clip_max_g = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+        weights_g = np.clip(w_norm_g, 1.0, clip_max_g)
+
+        X_adaptive_g = (X_std * signs_g) / weights_g
+
+        alpha_max = np.max(np.abs(X_adaptive_g.T @ y)) / len(y)
+        alpha_min = alpha_max * self.alpha_min_ratio
+        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
 
         def _compute_single_fold_errors(fold_idx, train_idx, val_idx):
             """
@@ -1928,6 +1995,16 @@ class AdaptiveFlippedLassoCV_EN(BaseAdaptiveFlippedLasso, RegressorMixin):
                 print(f"  [Fold {fold_idx + 1}] ENCV: lambda={en_cv.alpha_:.4f}, "
                       f"l1_ratio={en_cv.l1_ratio_:.2f}, nonzero={np.sum(beta_en_fold != 0)}/{len(beta_en_fold)}")
 
+            # 诊断：真信号上的符号准确率
+            fold_sign_acc = None
+            if beta_true is not None:
+                true_signals_idx = np.where(beta_true != 0)[0]
+                if len(true_signals_idx) > 0:
+                    correct_signs = np.sum(np.sign(beta_en_fold[true_signals_idx]) == np.sign(beta_true[true_signals_idx]))
+                    fold_sign_acc = correct_signs / len(true_signals_idx)
+                    if self.verbose:
+                        print(f"[Fold {fold_idx + 1}] Ridge sign accuracy: {fold_sign_acc * 100:.1f}% ({correct_signs}/{len(true_signals_idx)})")
+
             signs_fold = np.sign(beta_en_fold)
             signs_fold[signs_fold == 0] = 1.0
 
@@ -1944,10 +2021,6 @@ class AdaptiveFlippedLassoCV_EN(BaseAdaptiveFlippedLasso, RegressorMixin):
 
                 X_adaptive_tr = (X_tr * signs_fold) / weights
                 X_adaptive_va = (X_va * signs_fold) / weights
-
-                alpha_max = np.max(np.abs(X_adaptive_tr.T @ y_tr)) / len(y_tr)
-                alpha_min = alpha_max * self.alpha_min_ratio
-                alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
 
                 _, coefs_path, _ = lasso_path(
                     X_adaptive_tr, y_tr,
@@ -1972,11 +2045,14 @@ class AdaptiveFlippedLassoCV_EN(BaseAdaptiveFlippedLasso, RegressorMixin):
                 fold_errors[gamma_idx, :] = mse_path
                 fold_nselected[gamma_idx, :] = nselected_path
 
-            return fold_idx, fold_errors, fold_nselected
+            return fold_idx, fold_errors, fold_nselected, fold_sign_acc
 
         # 外层 fold 串行执行（避免嵌套并行死锁），内层 gamma 已并行
+        sign_accs = []
         for fold_idx, (train_idx, val_idx) in enumerate(splits):
-            fold_errors, fold_nselected = _compute_single_fold_errors(fold_idx, train_idx, val_idx)
+            _, fold_errors, fold_nselected, fold_sign_acc = _compute_single_fold_errors(fold_idx, train_idx, val_idx)
+            if fold_sign_acc is not None:
+                sign_accs.append(fold_sign_acc)
             error_matrix[:, :, fold_idx] = fold_errors
             nselected_matrix[:, :, fold_idx] = fold_nselected
             if self.verbose:
@@ -2195,6 +2271,7 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
         self.n_jobs = n_jobs
 
         self._init_fitted_attributes()
+        self.signs_ = None
 
     def get_params(self, deep: bool = True) -> dict:
         params = {
@@ -2226,7 +2303,7 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
                 raise ValueError(f"Invalid parameter '{key}' for estimator {self.__class__.__name__}")
         return self
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None, beta_true: np.ndarray = None):
         """
         拟合 AdaptiveFlippedLassoCV_EN_V2 模型（"主外主内" 策略）
 
@@ -2269,6 +2346,38 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
         error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
         nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
 
+        # ============================================================
+        # Stage 0: 全局统一 alpha 网格（所有 fold 共用）
+        # ============================================================
+        # 用全局数据生成搜索空间（仅用于定义网格，不参与 fold 内计算）
+        if self.standardize:
+            scaler_global = StandardScaler(copy=False)
+            X_std = scaler_global.fit_transform(X)
+        else:
+            X_std = X
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ridge_global = RidgeCV(alphas=self.lambda_ridge_list, cv=3,
+                                  scoring='neg_mean_squared_error')
+            ridge_global.fit(X_std, y)
+        beta_ridge_g = ridge_global.coef_
+
+        signs_g = np.sign(beta_ridge_g)
+        signs_g[signs_g == 0] = 1.0
+
+        raw_weights_g = 1.0 / (np.abs(beta_ridge_g) + eps) ** 1.0
+        min_w_g = np.min(raw_weights_g)
+        w_norm_g = raw_weights_g / min_w_g
+        clip_max_g = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+        weights_g = np.clip(w_norm_g, 1.0, clip_max_g)
+
+        X_adaptive_g = (X_std * signs_g) / weights_g
+
+        alpha_max = np.max(np.abs(X_adaptive_g.T @ y)) / len(y)
+        alpha_min = alpha_max * self.alpha_min_ratio
+        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
         def _compute_single_fold_errors(fold_idx, train_idx, val_idx):
             X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
@@ -2296,6 +2405,16 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
                 print(f"  [Fold {fold_idx + 1}] ENCV: lambda={en_cv.alpha_:.4f}, "
                       f"l1_ratio={en_cv.l1_ratio_:.2f}, nonzero={np.sum(beta_en_fold != 0)}/{len(beta_en_fold)}")
 
+            # 诊断：真信号上的符号准确率
+            fold_sign_acc = None
+            if beta_true is not None:
+                true_signals_idx = np.where(beta_true != 0)[0]
+                if len(true_signals_idx) > 0:
+                    correct_signs = np.sum(np.sign(beta_en_fold[true_signals_idx]) == np.sign(beta_true[true_signals_idx]))
+                    fold_sign_acc = correct_signs / len(true_signals_idx)
+                    if self.verbose:
+                        print(f"[Fold {fold_idx + 1}] Ridge sign accuracy: {fold_sign_acc * 100:.1f}% ({correct_signs}/{len(true_signals_idx)})")
+
             signs_fold = np.sign(beta_en_fold)
             signs_fold[signs_fold == 0] = 1.0
 
@@ -2311,10 +2430,6 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
 
                 X_adaptive_tr = (X_tr * signs_fold) / weights
                 X_adaptive_va = (X_va * signs_fold) / weights
-
-                alpha_max = np.max(np.abs(X_adaptive_tr.T @ y_tr)) / len(y_tr)
-                alpha_min = alpha_max * self.alpha_min_ratio
-                alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
 
                 _, coefs_path, _ = lasso_path(
                     X_adaptive_tr, y_tr,
@@ -2339,11 +2454,11 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
                 fold_errors[gamma_idx, :] = mse_path
                 fold_nselected[gamma_idx, :] = nselected_path
 
-            return fold_idx, fold_errors, fold_nselected
+            return fold_idx, fold_errors, fold_nselected, fold_sign_acc
 
         # 外层 fold 串行执行（避免嵌套并行死锁），内层 gamma 已并行
         for fold_idx, (train_idx, val_idx) in enumerate(splits):
-            fold_errors, fold_nselected = _compute_single_fold_errors(fold_idx, train_idx, val_idx)
+            _, fold_errors, fold_nselected, fold_sign_acc = _compute_single_fold_errors(fold_idx, train_idx, val_idx)
             error_matrix[:, :, fold_idx] = fold_errors
             nselected_matrix[:, :, fold_idx] = fold_nselected
             if self.verbose:
@@ -2830,7 +2945,7 @@ class ConfidenceCalibratedAFL(BaseAdaptiveFlippedLasso, RegressorMixin):
 
         return X_aug
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None, beta_true: np.ndarray = None):
         """
         拟合 CC-AFL 模型
 
@@ -2844,6 +2959,8 @@ class ConfidenceCalibratedAFL(BaseAdaptiveFlippedLasso, RegressorMixin):
             Sample weights
         cv_splits : list of tuples, optional
             Pre-generated CV splits for fair comparison
+        beta_true : np.ndarray, optional
+            True coefficients (p,) — 用于计算 Ridge 先验符号准确率
         """
         from sklearn.model_selection import KFold
         from sklearn.metrics import mean_squared_error
@@ -2884,6 +3001,45 @@ class ConfidenceCalibratedAFL(BaseAdaptiveFlippedLasso, RegressorMixin):
         error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
         nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
 
+        # ============================================================
+        # Stage 0: 全局统一 alpha 网格（所有 fold 共用）
+        # ============================================================
+        # 用全局数据生成搜索空间（仅用于定义网格，不参与 fold 内计算）
+        if self.standardize:
+            scaler_global = StandardScaler(copy=False)
+            X_std = scaler_global.fit_transform(X)
+        else:
+            X_std = X
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ridge_global = RidgeCV(alphas=self.lambda_ridge_list, cv=3,
+                                  scoring='neg_mean_squared_error')
+            ridge_global.fit(X_std, y)
+        beta_ridge_g = ridge_global.coef_
+
+        signs_g = np.sign(beta_ridge_g)
+        signs_g[signs_g == 0] = 1.0
+
+        # 使用 gamma=1.0 计算全局权重（简化版）
+        raw_weights_g = 1.0 / (np.abs(beta_ridge_g) + eps) ** 1.0
+        min_w_g = np.min(raw_weights_g)
+        w_norm_g = raw_weights_g / min_w_g
+        clip_max_g = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+        weights_g = np.clip(w_norm_g, 1.0, clip_max_g)
+
+        # CC-AFL 使用增广矩阵，先用自信集简化计算全局 alpha 网格
+        tau_g = self._compute_mad_threshold(beta_ridge_g)
+        conf_mask_g = np.abs(beta_ridge_g) >= tau_g
+        # 使用自信集构造简化增广矩阵
+        signs_conf = signs_g[conf_mask_g]
+        weights_conf = weights_g[conf_mask_g]
+        X_conf_g = X_std[:, conf_mask_g] * signs_conf / weights_conf
+
+        alpha_max = np.max(np.abs(X_conf_g.T @ y)) / len(y)
+        alpha_min = alpha_max * self.alpha_min_ratio
+        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
         # 外层 fold 串行执行（避免嵌套并行死锁）
         # 内层 gamma 并行执行
         n_jobs = self.n_jobs if self.n_jobs is not None else -1
@@ -2919,12 +3075,7 @@ class ConfidenceCalibratedAFL(BaseAdaptiveFlippedLasso, RegressorMixin):
                 # 预计算验证集的增广矩阵
                 X_aug_va = self._transform_to_augmented(X_va, beta_ridge_fold, weights, gamma)
 
-                # alpha 路径
-                alpha_max = np.max(np.abs(X_aug_tr.T @ y_tr)) / len(y_tr)
-                alpha_min = alpha_max * self.alpha_min_ratio
-                alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
-
-                # lasso_path
+                # lasso_path（使用全局统一 alphas）
                 _, coefs_path, _ = lasso_path(
                     X_aug_tr, y_tr,
                     alphas=alphas,
@@ -3101,6 +3252,34 @@ class ConfidenceCalibratedAFL(BaseAdaptiveFlippedLasso, RegressorMixin):
         y_pred = self.predict(X)
         return -mean_squared_error(y, y_pred, sample_weight=sample_weight)
 
+    def ridge_sign_accuracy(self, beta_true: np.ndarray) -> dict:
+        """评估 Ridge 先验 beta_ridge_ 在真信号上的符号准确率。
+
+        Parameters
+        ----------
+        beta_true : np.ndarray
+            真实系数向量 (p,)
+
+        Returns
+        -------
+        dict
+            包含 correct_signs, total_signals, accuracy
+        """
+        if not hasattr(self, 'beta_ridge_'):
+            raise ValueError("模型尚未拟合，请先调用 fit()")
+        true_signals_idx = np.where(beta_true != 0)[0]
+        if len(true_signals_idx) == 0:
+            return {"correct_signs": 0, "total_signals": 0, "accuracy": 0.0}
+        correct_signs = np.sum(
+            np.sign(self.beta_ridge_[true_signals_idx]) == np.sign(beta_true[true_signals_idx])
+        )
+        accuracy = correct_signs / len(true_signals_idx)
+        return {
+            "correct_signs": int(correct_signs),
+            "total_signals": int(len(true_signals_idx)),
+            "accuracy": float(accuracy)
+        }
+
 
 class ConfidenceCalibratedAFLClassifier(BaseAdaptiveFlippedLasso, ClassifierMixin):
     """
@@ -3156,7 +3335,7 @@ class ConfidenceCalibratedAFLClassifier(BaseAdaptiveFlippedLasso, ClassifierMixi
                 setattr(self, key, value)
         return self
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None, beta_true: np.ndarray = None):
         """拟合 CC-AFL 分类器"""
         from sklearn.utils.validation import check_X_y
 
@@ -3188,7 +3367,7 @@ class ConfidenceCalibratedAFLClassifier(BaseAdaptiveFlippedLasso, ClassifierMixi
             eps=self.eps,
             n_jobs=self.n_jobs,
         )
-        ccaf.fit(X, y_continuous, sample_weight, cv_splits)
+        ccaf.fit(X, y_continuous, sample_weight, cv_splits, beta_true=beta_true)
 
         # 复制属性
         self.coef_ = ccaf.coef_
@@ -3198,6 +3377,8 @@ class ConfidenceCalibratedAFLClassifier(BaseAdaptiveFlippedLasso, ClassifierMixi
         self.best_gamma_ = ccaf.best_gamma_
         self.best_alpha_ = ccaf.best_alpha_
         self.cv_score_ = ccaf.cv_score_
+        self.beta_ridge_ = ccaf.beta_ridge_
+        self.signs_ = ccaf.signs_
 
         return self
 
@@ -3218,3 +3399,31 @@ class ConfidenceCalibratedAFLClassifier(BaseAdaptiveFlippedLasso, ClassifierMixi
         """默认准确率评分"""
         from sklearn.metrics import accuracy_score
         return accuracy_score(y, self.predict(X), sample_weight=sample_weight)
+
+    def ridge_sign_accuracy(self, beta_true: np.ndarray) -> dict:
+        """评估 Ridge 先验 beta_ridge_ 在真信号上的符号准确率。
+
+        Parameters
+        ----------
+        beta_true : np.ndarray
+            真实系数向量 (p,)
+
+        Returns
+        -------
+        dict
+            包含 correct_signs, total_signals, accuracy
+        """
+        if not hasattr(self, 'beta_ridge_'):
+            raise ValueError("模型尚未拟合，请先调用 fit()")
+        true_signals_idx = np.where(beta_true != 0)[0]
+        if len(true_signals_idx) == 0:
+            return {"correct_signs": 0, "total_signals": 0, "accuracy": 0.0}
+        correct_signs = np.sum(
+            np.sign(self.beta_ridge_[true_signals_idx]) == np.sign(beta_true[true_signals_idx])
+        )
+        accuracy = correct_signs / len(true_signals_idx)
+        return {
+            "correct_signs": int(correct_signs),
+            "total_signals": int(len(true_signals_idx)),
+            "accuracy": float(accuracy)
+        }

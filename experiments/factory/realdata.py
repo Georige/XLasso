@@ -4,27 +4,17 @@ Real Dataset Experiment Runner
 ==============================
 Evaluates feature selection models on real-world datasets.
 
-Two evaluation modes:
-1. Random Split Mode (default for cross-sectional data):
-   - Random shuffle data, split 70% train / 30% test
-   - Model does internal CV on training data
-   - Evaluate on held-out test set
-
-2. Rolling Window Mode (for time series data):
-   - Use a rolling training window (e.g., 120 months)
-   - Train on window data, predict next month
-   - Roll forward by 1 month, repeat
-   - Compute RMSE/MAE over all out-of-sample predictions
+Data Flow (per repeat):
+    1. Load data with preprocessing
+    2. seed = 42 + repeat
+    3. 80/20 train/test split using seed
+    4. Generate 10-fold CV splits on training data using seed
+    5. Pass (X_train, y_train, cv_splits) to algorithm
+    6. Algorithm handles CV internally
+    7. Evaluate on held-out test set
 
 Usage:
-    # Rolling window (time series) - FRED-MD
-    python factory/realdata.py --dataset fred_md --mode rolling --window-size 120 --algo elasticnet_1se
-
-    # Random split (cross-sectional)
-    python factory/realdata.py --dataset riboflavin --mode random --algo elasticnet_1se --n-iter 100
-
-    # Compare multiple models on time series
-    python factory/realdata.py --dataset fred_md --mode rolling --window-size 120 --compare elasticnet_1se,lasso,nlasso
+    python factory/realdata.py --config configs/realdata/my_experiment.yaml
 """
 
 import argparse
@@ -37,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -46,27 +37,38 @@ from experiments.factory.run import ALGO_REGISTRY, generate_experiment_dir, save
 # Real dataset registry
 DATASET_REGISTRY = {
     "riboflavin": {
-        "path": "experiments/dataset/riboflavin.npz",
+        "path": "dataset/riboflavin.npz",
         "description": "Riboflavin gene expression (n=71, p=4088)",
         "task": "regression",
     },
     "tecator": {
-        "path": "experiments/dataset/tecator.npz",
+        "path": "dataset/tecator.npz",
         "description": "Tecator near-infrared spectra (n=133, p=1024)",
         "task": "regression",
     },
     "fred_md": {
-        "path": "experiments/dataset/fred_md.npz",
+        "path": "dataset/fred_md.npz",
         "description": "FRED-MD macroeconomic indicators (n=441, p=76)",
         "task": "regression",
     },
 }
 
 
+def load_config(config_path):
+    """Load configuration from YAML file."""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run real data experiments")
     parser.add_argument(
-        "--dataset", "-d", required=True,
+        "--config", "-C",
+        help="Path to YAML config file",
+    )
+    parser.add_argument(
+        "--dataset", "-d",
         choices=list(DATASET_REGISTRY.keys()),
         help="Real dataset to use",
     )
@@ -76,38 +78,35 @@ def parse_args():
     )
     parser.add_argument(
         "--compare", "-c",
-        help="Comma-separated list of algorithms to compare (mutually exclusive with --algo)",
+        help="Comma-separated list of algorithms to compare",
     )
     parser.add_argument(
         "--output-dir", "-o",
         default="experiments/results/realdata",
         help="Output directory",
     )
-    # Evaluation mode
     parser.add_argument(
         "--mode", "-m",
         choices=["random", "rolling"],
         default="random",
-        help="Evaluation mode: random (shuffle split) or rolling (time series window)",
+        help="Evaluation mode",
     )
-    # Rolling window parameters
     parser.add_argument(
         "--window-size", "-w",
         type=int, default=120,
-        help="Rolling training window size (months) for rolling mode",
+        help="Rolling training window size",
     )
-    # Random split parameters
     parser.add_argument(
         "--train-ratio", type=float, default=0.7,
-        help="Training set ratio for random mode (default: 0.7)",
+        help="Training set ratio",
     )
     parser.add_argument(
         "--n-iter", type=int, default=100,
-        help="Number of iterations for random mode (default: 100)",
+        help="Number of iterations",
     )
     parser.add_argument(
         "--random-seed", type=int, default=42,
-        help="Random seed (default: 42)",
+        help="Random seed base",
     )
     parser.add_argument(
         "--dry-run",
@@ -117,8 +116,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_dataset(dataset_name):
-    """Load a real dataset from npz file."""
+def load_dataset(dataset_name, preprocess=None):
+    """Load a real dataset from npz file with optional preprocessing."""
     if dataset_name not in DATASET_REGISTRY:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
@@ -135,14 +134,38 @@ def load_dataset(dataset_name):
     if hasattr(X, 'toarray'):
         X = X.toarray()
 
+    # Apply preprocessing
+    if preprocess:
+        X = apply_preprocessing(X, y, preprocess)
+
     print(f"[realdata] Loaded {dataset_name}: X={X.shape}, y={y.shape}")
     print(f"[realdata] Description: {dataset_info['description']}")
 
     return X, y, dataset_info
 
 
+def apply_preprocessing(X, y, preprocess):
+    """Apply preprocessing to features."""
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+
+    method = preprocess.get("method", "standard")
+    if method == "standard":
+        scaler = StandardScaler()
+    elif method == "minmax":
+        scaler = MinMaxScaler()
+    elif method == "robust":
+        scaler = RobustScaler()
+    elif method == "none":
+        return X
+    else:
+        raise ValueError(f"Unknown preprocessing method: {method}")
+
+    X = scaler.fit_transform(X)
+    return X
+
+
 def _get_cv_algo_name(algo_name):
-    """Map algorithm name to its CV version for real data experiments."""
+    """Map algorithm name to its CV version."""
     cv_mapping = {
         "nlasso": "nlasso_cv",
         "elasticnet_1se": "elasticnet_1se",
@@ -153,8 +176,8 @@ def _get_cv_algo_name(algo_name):
     return cv_mapping.get(algo_name, algo_name)
 
 
-def get_cv_algo_params(algo_name):
-    """Get default CV-based algorithm parameters."""
+def get_cv_algo_params(algo_name, custom_params=None):
+    """Get default CV-based algorithm parameters, merged with custom params if provided."""
     params = {
         "standardize": True,
         "fit_intercept": True,
@@ -209,13 +232,12 @@ def get_cv_algo_params(algo_name):
             "family": "gaussian",
             "n_folds": 5,
         })
-    elif algo_name == "adaptive_flipped_lasso":
+    elif algo_name == "cv_unilasso":
         params.update({
-            "lambda_ridge": 10.0,
-            "lambda_": 0.01,
-            "gamma": 1.0,
-            "max_iter": 2000,
-            "tol": 1e-4,
+            "n_folds": 5,
+            "lmda_min_ratio": 0.0001,
+            "use_1se": True,
+            "random_state": 42,
         })
     elif algo_name == "adaptive_flipped_lasso_cv":
         params.update({
@@ -229,6 +251,16 @@ def get_cv_algo_params(algo_name):
             "standardize": True,
             "fit_intercept": True,
             "verbose": False,
+        })
+    elif algo_name == "pfl_regressor_cv":
+        params.update({
+            "cv": 5,
+            "lambda_ridge_list": [0.1, 1.0, 10.0, 100.0],
+            "alpha_min_ratio": 0.0001,
+            "n_alpha": 100,
+            "max_iter": 10000,
+            "tol": 0.0001,
+            "random_state": 2026,
         })
     elif algo_name == "nlasso":
         params.update({
@@ -245,79 +277,330 @@ def get_cv_algo_params(algo_name):
             "max_iter": 5000,
         })
 
+    # Merge custom params (higher priority)
+    if custom_params:
+        params.update(custom_params)
+
     return params
 
 
-def run_single_iteration(algo_class, algo_params, X_train, y_train, X_test, y_test, store_coefs=False):
-    """Train model and evaluate on test set.
-
-    Args:
-        store_coefs: if True, returns the coefficient vector for frequency analysis
+def run_single_repeat(algo_class, algo_params, X, y, repeat_idx, train_ratio, seed_base, cv_folds):
     """
+    Run a single repeat with proper data flow:
+    1. seed = seed_base + repeat_idx
+    2. 80/20 train/test split using seed
+    3. Generate 10-fold CV splits on training data using seed
+    4. Pass (X_train, y_train, cv_splits) to algorithm
+    5. Evaluate on held-out test set
+
+    Returns metrics dict or None on error.
+    """
+    import inspect
+    from sklearn.model_selection import KFold, train_test_split
+
+    seed = seed_base + repeat_idx
+
+    # Step 1: 80/20 train/test split
+    train_idx, test_idx = train_test_split(
+        np.arange(len(y)),
+        train_size=train_ratio,
+        test_size=1 - train_ratio,
+        random_state=seed,
+        shuffle=True
+    )
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+
+    # Step 2: Generate 10-fold CV splits on training data
+    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=seed)
+    cv_splits = list(kfold.split(X_train))
+
+    # Step 3: Initialize algorithm and check if it supports cv_splits
     algo = algo_class(**algo_params)
+    supports_cv_splits = 'cv_splits' in inspect.signature(algo.fit).parameters
+
+    # Step 4: Train with CV splits
     start_time = time.time()
-    algo.fit(X_train, y_train)
+    if supports_cv_splits:
+        try:
+            algo.fit(X_train, y_train, cv_splits=cv_splits)
+        except TypeError:
+            # Some algorithms don't accept cv_splits
+            algo.fit(X_train, y_train)
+    else:
+        algo.fit(X_train, y_train)
     train_time = time.time() - start_time
 
+    # Step 5: Evaluate on test set
     y_pred = algo.predict(X_test)
     test_mse = np.mean((y_test - y_pred) ** 2)
     coef = algo.coef_
     nonzero_mask = np.abs(coef) > 1e-6
     n_selected = int(np.sum(nonzero_mask))
-    selected_features = np.where(nonzero_mask)[0].tolist()  # List of selected feature indices
-
-    info = {"train_time": train_time, "n_selected": n_selected}
-    if hasattr(algo, 'best_alpha_'):
-        info["best_alpha"] = algo.best_alpha_
-    if hasattr(algo, 'best_gamma_'):
-        info["best_gamma"] = algo.best_gamma_
-    if hasattr(algo, 'best_lambda_ridge_'):
-        info["best_lambda_ridge"] = algo.best_lambda_ridge_
 
     result = {
+        "repeat": repeat_idx,
+        "seed": seed,
+        "train_size": len(train_idx),
+        "test_size": len(test_idx),
         "test_mse": test_mse,
         "model_size": n_selected,
         "sparsity": 1 - n_selected / len(coef) if len(coef) > 0 else 0,
-        "selected_features": selected_features,  # Raw feature indices for each iteration
-        **info,
+        "train_time": train_time,
+        "n_selected": n_selected,
+        "selected_features": np.where(nonzero_mask)[0].tolist(),
     }
 
-    if store_coefs:
-        result["coef"] = coef.copy()
+    # Capture CV parameters if available
+    if hasattr(algo, 'best_alpha_'):
+        result["best_alpha"] = algo.best_alpha_
+    if hasattr(algo, 'best_gamma_'):
+        result["best_gamma"] = algo.best_gamma_
+    if hasattr(algo, 'best_lambda_ridge_'):
+        result["best_lambda_ridge"] = algo.best_lambda_ridge_
+    if hasattr(algo, 'cv_score_'):
+        result["cv_score"] = algo.cv_score_
 
     return result
 
 
-# ============================================================================
-# Rolling Window Mode (Time Series)
-# ============================================================================
+def run_experiment_random(dataset_name, algo_name, algo_params=None, n_iter=100,
+                          train_ratio=0.8, seed_base=42, cv_folds=10,
+                          preprocess=None):
+    """Run random split experiment for cross-sectional evaluation."""
+    print(f"[realdata] Starting random split experiment")
+    print(f"[realdata] Dataset: {dataset_name}")
+    print(f"[realdata] Algorithm: {algo_name}")
+    print(f"[realdata] Iterations: {n_iter}, CV folds: {cv_folds}")
+    print(f"[realdata] Train ratio: {train_ratio}, Seed base: {seed_base}")
 
-def run_rolling_window(X, y, algo_class, algo_params, window_size=120):
-    """
-    Rolling window evaluation for time series data.
+    X, y, dataset_info = load_dataset(dataset_name, preprocess=preprocess)
+    n_features = X.shape[1]
 
-    Workflow:
-        1. Train on window [i, i+window_size)
-        2. Predict at time i+window_size
-        3. Roll forward by 1, repeat
-        4. Collect all out-of-sample predictions
-    """
+    cv_algo_name = _get_cv_algo_name(algo_name)
+    algo_class = ALGO_REGISTRY.get(cv_algo_name)
+    if algo_class is None:
+        raise ValueError(f"Unknown algorithm: {cv_algo_name}")
+
+    algo_params = get_cv_algo_params(algo_name, custom_params=algo_params)
+    print(f"[realdata] Algorithm params: {algo_params}")
+
+    all_results = []
+    coef_matrix = []
+
+    for i in range(n_iter):
+        try:
+            result = run_single_repeat(
+                algo_class=algo_class,
+                algo_params=algo_params,
+                X=X, y=y,
+                repeat_idx=i,
+                train_ratio=train_ratio,
+                seed_base=seed_base,
+                cv_folds=cv_folds
+            )
+            result["iteration"] = i
+            all_results.append(result)
+
+            if (i + 1) % 10 == 0 or i == 0:
+                recent_mse = np.mean([r["test_mse"] for r in all_results[-10:]])
+                recent_size = np.mean([r["model_size"] for r in all_results[-10:]])
+                print(f"  Iter {i+1}/{n_iter}: MSE={recent_mse:.4f}, Size={recent_size:.1f}")
+
+        except Exception as e:
+            print(f"  ERROR in iteration {i}: {e}")
+            traceback.print_exc()
+            continue
+
+    if not all_results:
+        raise RuntimeError("No successful iterations")
+
+    results_df = pd.DataFrame(all_results)
+
+    # Compute feature selection frequency
+    coef_matrix = np.array(coef_matrix) if coef_matrix else np.array([])
+    if len(coef_matrix) > 0:
+        selection_matrix = np.abs(coef_matrix) > 1e-6
+        selection_freq = np.mean(selection_matrix, axis=0)
+        selection_count = np.sum(selection_matrix, axis=0)
+        freq_order = np.argsort(selection_freq)[::-1]
+        top_features = [(i, selection_freq[i], selection_count[i]) for i in freq_order[:20]]
+    else:
+        selection_freq = None
+        selection_count = None
+        top_features = []
+
+    print(f"\n[realdata] Top 20 most frequently selected features:")
+    for rank, (feat_idx, freq, count) in enumerate(top_features, 1):
+        print(f"  {rank}. Feature {feat_idx}: selected {count}/{n_iter} times ({freq*100:.1f}%)")
+
+    summary = {
+        "dataset": dataset_name,
+        "algo": algo_name,
+        "mode": "random",
+        "n_iter": n_iter,
+        "train_ratio": train_ratio,
+        "cv_folds": cv_folds,
+        "n_features": n_features,
+        "test_mse": {
+            "mean": float(results_df["test_mse"].mean()),
+            "std": float(results_df["test_mse"].std()),
+        },
+        "model_size": {
+            "mean": float(results_df["model_size"].mean()),
+            "std": float(results_df["model_size"].std()),
+        },
+    }
+
+    return {
+        "results": results_df,
+        "summary": summary,
+        "selection_freq": selection_freq,
+        "selection_count": selection_count,
+    }
+
+
+def run_comparison_random(dataset_name, algo_names, algo_params_map=None, n_iter=100,
+                           train_ratio=0.8, seed_base=42, cv_folds=10,
+                           preprocess=None):
+    """Run random split comparison for multiple algorithms."""
+    print(f"[realdata] Starting random split comparison")
+    print(f"[realdata] Dataset: {dataset_name}")
+    print(f"[realdata] Algorithms: {algo_names}")
+    print(f"[realdata] Iterations: {n_iter}, CV folds: {cv_folds}")
+
+    if algo_params_map is None:
+        algo_params_map = {}
+
+    X, y, dataset_info = load_dataset(dataset_name, preprocess=preprocess)
+    n_features = X.shape[1]
+
+    all_results = {}
+    all_selection_freq = {}
+    all_selection_count = {}
+    summaries = {}
+
+    for algo_name in algo_names:
+        print(f"\n{'='*60}")
+        print(f"[realdata] Training: {algo_name}")
+        print(f"{'='*60}")
+
+        cv_algo_name = _get_cv_algo_name(algo_name)
+        algo_class = ALGO_REGISTRY.get(cv_algo_name)
+        if algo_class is None:
+            print(f"[realdata] WARNING: Unknown algorithm {cv_algo_name}, skipping")
+            continue
+
+        custom_params = algo_params_map.get(algo_name, {})
+        algo_params = get_cv_algo_params(algo_name, custom_params=custom_params)
+        print(f"[realdata] Algorithm params: {algo_params}")
+
+        algo_results = []
+        all_selected_features = []
+
+        for i in range(n_iter):
+            try:
+                result = run_single_repeat(
+                    algo_class=algo_class,
+                    algo_params=algo_params,
+                    X=X, y=y,
+                    repeat_idx=i,
+                    train_ratio=train_ratio,
+                    seed_base=seed_base,
+                    cv_folds=cv_folds
+                )
+                result["iteration"] = i
+                result["algo"] = algo_name
+                algo_results.append(result)
+                all_selected_features.append(result["selected_features"])
+
+                if (i + 1) % max(1, n_iter // 10) == 0 or i == 0 or i == n_iter - 1:
+                    recent_mse = np.mean([r["test_mse"] for r in algo_results[-10:]])
+                    recent_size = np.mean([r["model_size"] for r in algo_results[-10:]])
+                    print(f"  Iter {i+1}/{n_iter}: MSE={recent_mse:.4f}, Size={recent_size:.1f}")
+
+            except Exception as e:
+                print(f"  ERROR in iteration {i}: {e}")
+                continue
+
+        if algo_results:
+            results_df = pd.DataFrame(algo_results)
+            all_results[algo_name] = results_df
+
+            # Compute selection frequency across all iterations
+            max_features = n_features
+            selection_matrix = np.zeros((n_iter, max_features), dtype=bool)
+            for i, feats in enumerate(all_selected_features):
+                for f in feats:
+                    if f < max_features:
+                        selection_matrix[i, f] = True
+
+            selection_freq = np.mean(selection_matrix, axis=0)
+            selection_count = np.sum(selection_matrix, axis=0)
+            all_selection_freq[algo_name] = selection_freq
+            all_selection_count[algo_name] = selection_count
+
+            # Top features
+            freq_order = np.argsort(selection_freq)[::-1]
+            top_features = [(i, selection_freq[i], int(selection_count[i])) for i in freq_order[:20]]
+
+            print(f"\n[realdata] Top 10 most frequently selected features for {algo_name}:")
+            for rank, (feat_idx, freq, count) in enumerate(top_features[:10], 1):
+                print(f"  {rank}. Feature {feat_idx}: {count}/{n_iter} ({freq*100:.1f}%)")
+
+            summaries[algo_name] = {
+                "test_mse": {
+                    "mean": float(results_df["test_mse"].mean()),
+                    "std": float(results_df["test_mse"].std()),
+                },
+                "model_size": {
+                    "mean": float(results_df["model_size"].mean()),
+                    "std": float(results_df["model_size"].std()),
+                },
+                "top_features": top_features,
+            }
+
+    if not summaries:
+        raise RuntimeError("No successful algorithms")
+
+    return {
+        "results": all_results,
+        "summaries": summaries,
+        "selection_freq": all_selection_freq,
+        "selection_count": all_selection_count,
+    }
+
+
+def run_experiment_rolling(dataset_name, algo_name, algo_params=None, window_size=120, seed_base=42):
+    """Run rolling window experiment for time series evaluation."""
+    print(f"[realdata] Starting rolling window experiment")
+    print(f"[realdata] Dataset: {dataset_name}")
+    print(f"[realdata] Algorithm: {algo_name}")
+    print(f"[realdata] Window size: {window_size}")
+
+    X, y, dataset_info = load_dataset(dataset_name)
     n_samples = len(y)
     n_predictions = n_samples - window_size
 
     if n_predictions <= 0:
         raise ValueError(f"Window size {window_size} is too large for {n_samples} samples")
 
+    cv_algo_name = _get_cv_algo_name(algo_name)
+    algo_class = ALGO_REGISTRY.get(cv_algo_name)
+    if algo_class is None:
+        raise ValueError(f"Unknown algorithm: {cv_algo_name}")
+
+    algo_params = get_cv_algo_params(algo_name, custom_params=algo_params)
+    print(f"[realdata] Algorithm params: {algo_params}")
+
     print(f"[rolling] Window size: {window_size}, Total predictions: {n_predictions}")
 
-    all_predictions = []
-    all_actuals = []
     all_results = []
 
     for i in range(n_predictions):
         train_start = i
         train_end = i + window_size
-        test_idx = train_end  # Predict next month
+        test_idx = train_end
 
         X_train = X[train_start:train_end]
         y_train = y[train_start:train_end]
@@ -344,10 +627,7 @@ def run_rolling_window(X, y, algo_class, algo_params, window_size=120):
                 "squared_error": squared_error,
                 "model_size": n_selected,
             }
-
             all_results.append(result)
-            all_predictions.append(y_pred)
-            all_actuals.append(y_test)
 
         except Exception as e:
             print(f"  Warning at step {i}: {e}")
@@ -361,30 +641,7 @@ def run_rolling_window(X, y, algo_class, algo_params, window_size=120):
     if not all_results:
         raise RuntimeError("No successful predictions")
 
-    return all_results
-
-
-def run_experiment_rolling(dataset_name, algo_name, window_size=120, random_seed=42):
-    """Run rolling window experiment for time series evaluation."""
-    print(f"[realdata] Starting rolling window experiment")
-    print(f"[realdata] Dataset: {dataset_name}")
-    print(f"[realdata] Algorithm: {algo_name}")
-    print(f"[realdata] Window size: {window_size}")
-
-    X, y, dataset_info = load_dataset(dataset_name)
-
-    cv_algo_name = _get_cv_algo_name(algo_name)
-    algo_class = ALGO_REGISTRY.get(cv_algo_name)
-    if algo_class is None:
-        raise ValueError(f"Unknown algorithm: {cv_algo_name}")
-
-    algo_params = get_cv_algo_params(algo_name)
-    print(f"[realdata] Algorithm params: {algo_params}")
-
-    all_results = run_rolling_window(X, y, algo_class, algo_params, window_size)
-
     results_df = pd.DataFrame(all_results)
-
     rmse = np.sqrt(results_df["squared_error"].mean())
     mae = results_df["abs_error"].mean()
     avg_model_size = results_df["model_size"].mean()
@@ -409,267 +666,6 @@ def run_experiment_rolling(dataset_name, algo_name, window_size=120, random_seed
     }
 
 
-def run_comparison_rolling(dataset_name, algo_names, window_size=120, random_seed=42):
-    """Run rolling window comparison for multiple algorithms."""
-    print(f"[realdata] Starting rolling window comparison")
-    print(f"[realdata] Dataset: {dataset_name}")
-    print(f"[realdata] Algorithms: {algo_names}")
-    print(f"[realdata] Window size: {window_size}")
-
-    X, y, dataset_info = load_dataset(dataset_name)
-
-    all_results = {}
-    summaries = {}
-
-    for algo_name in algo_names:
-        print(f"\n{'='*60}")
-        print(f"[realdata] Training: {algo_name}")
-        print(f"{'='*60}")
-
-        cv_algo_name = _get_cv_algo_name(algo_name)
-        algo_class = ALGO_REGISTRY.get(cv_algo_name)
-        if algo_class is None:
-            print(f"[realdata] WARNING: Unknown algorithm {cv_algo_name}, skipping")
-            continue
-
-        algo_params = get_cv_algo_params(algo_name)
-        print(f"[realdata] Algorithm params: {algo_params}")
-
-        try:
-            results = run_rolling_window(X, y, algo_class, algo_params, window_size)
-            results_df = results["results"]
-            all_results[algo_name] = results_df
-
-            rmse = np.sqrt(results_df["squared_error"].mean())
-            mae = results_df["abs_error"].mean()
-            avg_model_size = results_df["model_size"].mean()
-
-            summaries[algo_name] = {
-                "rmse": float(rmse),
-                "mae": float(mae),
-                "model_size": {
-                    "mean": float(avg_model_size),
-                    "std": float(results_df["model_size"].std()),
-                },
-            }
-        except Exception as e:
-            print(f"[realdata] ERROR with {algo_name}: {e}")
-            traceback.print_exc()
-            continue
-
-    if not summaries:
-        raise RuntimeError("No successful algorithms")
-
-    return {
-        "results": all_results,
-        "summaries": summaries,
-    }
-
-
-# ============================================================================
-# Random Split Mode (Cross-sectional)
-# ============================================================================
-
-def run_experiment_random(dataset_name, algo_name, n_iter=100, train_ratio=0.7, random_seed=42):
-    """Run random split experiment for cross-sectional evaluation."""
-    print(f"[realdata] Starting random split experiment")
-    print(f"[realdata] Dataset: {dataset_name}")
-    print(f"[realdata] Algorithm: {algo_name}")
-    print(f"[realdata] Iterations: {n_iter}")
-
-    X, y, dataset_info = load_dataset(dataset_name)
-    n_features = X.shape[1]
-
-    cv_algo_name = _get_cv_algo_name(algo_name)
-    algo_class = ALGO_REGISTRY.get(cv_algo_name)
-    if algo_class is None:
-        raise ValueError(f"Unknown algorithm: {cv_algo_name}")
-
-    algo_params = get_cv_algo_params(algo_name)
-    print(f"[realdata] Algorithm params: {algo_params}")
-
-    all_results = []
-    coef_matrix = []  # Store coefficients for frequency analysis
-
-    for i in range(n_iter):
-        rng = np.random.RandomState(random_seed + i)
-        n_samples = len(y)
-        indices = np.arange(n_samples)
-        rng.shuffle(indices)
-        n_train = int(n_samples * train_ratio)
-        train_idx = indices[:n_train]
-        test_idx = indices[n_train:]
-
-        try:
-            result = run_single_iteration(
-                algo_class, algo_params, X[train_idx], y[train_idx], X[test_idx], y[test_idx],
-                store_coefs=True
-            )
-            result["iteration"] = i
-            all_results.append(result)
-            coef_matrix.append(result["coef"])
-
-            if (i + 1) % 10 == 0 or i == 0:
-                recent_mse = np.mean([r["test_mse"] for r in all_results[-10:]])
-                recent_size = np.mean([r["model_size"] for r in all_results[-10:]])
-                print(f"  Iter {i+1}/{n_iter}: MSE={recent_mse:.4f}, Size={recent_size:.1f}")
-
-        except Exception as e:
-            print(f"  ERROR in iteration {i}: {e}")
-            continue
-
-    if not all_results:
-        raise RuntimeError("No successful iterations")
-
-    results_df = pd.DataFrame(all_results)
-
-    # Compute feature selection frequency
-    coef_matrix = np.array(coef_matrix)
-    selection_matrix = np.abs(coef_matrix) > 1e-6
-    selection_freq = np.mean(selection_matrix, axis=0)  # Frequency for each feature
-    selection_count = np.sum(selection_matrix, axis=0)  # Count for each feature
-
-    # Sort features by selection frequency
-    freq_order = np.argsort(selection_freq)[::-1]
-    top_features = [(i, selection_freq[i], selection_count[i]) for i in freq_order[:20]]
-
-    print(f"\n[realdata] Top 20 most frequently selected features:")
-    for rank, (feat_idx, freq, count) in enumerate(top_features, 1):
-        print(f"  {rank}. Feature {feat_idx}: selected {count}/{n_iter} times ({freq*100:.1f}%)")
-
-    summary = {
-        "dataset": dataset_name,
-        "algo": algo_name,
-        "mode": "random",
-        "n_iter": n_iter,
-        "train_ratio": train_ratio,
-        "n_features": n_features,
-        "test_mse": {
-            "mean": float(results_df["test_mse"].mean()),
-            "std": float(results_df["test_mse"].std()),
-        },
-        "model_size": {
-            "mean": float(results_df["model_size"].mean()),
-            "std": float(results_df["model_size"].std()),
-        },
-        "selection_frequency": {
-            "top_features": top_features,
-            "all_frequencies": {i: float(selection_freq[i]) for i in range(n_features)},
-            "all_counts": {i: int(selection_count[i]) for i in range(n_features)},
-        },
-    }
-
-    return {
-        "results": results_df,
-        "summary": summary,
-        "selection_freq": selection_freq,
-        "selection_count": selection_count,
-        "coef_matrix": coef_matrix,
-    }
-
-
-def run_comparison_random(dataset_name, algo_names, n_iter=100, train_ratio=0.7, random_seed=42):
-    """Run random split comparison for multiple algorithms."""
-    print(f"[realdata] Starting random split comparison")
-    print(f"[realdata] Dataset: {dataset_name}")
-    print(f"[realdata] Algorithms: {algo_names}")
-
-    X, y, dataset_info = load_dataset(dataset_name)
-    n_features = X.shape[1]
-
-    all_results = {}
-    all_selection_freq = {}
-    all_coef_matrices = {}
-    summaries = {}
-
-    for algo_name in algo_names:
-        print(f"\n{'='*60}")
-        print(f"[realdata] Training: {algo_name}")
-        print(f"{'='*60}")
-
-        cv_algo_name = _get_cv_algo_name(algo_name)
-        algo_class = ALGO_REGISTRY.get(cv_algo_name)
-        if algo_class is None:
-            print(f"[realdata] WARNING: Unknown algorithm {cv_algo_name}, skipping")
-            continue
-
-        algo_params = get_cv_algo_params(algo_name)
-        print(f"[realdata] Algorithm params: {algo_params}")
-
-        algo_results = []
-        coef_matrix = []
-
-        for i in range(n_iter):
-            rng = np.random.RandomState(random_seed + i)
-            n_samples = len(y)
-            indices = np.arange(n_samples)
-            rng.shuffle(indices)
-            n_train = int(n_samples * train_ratio)
-            train_idx = indices[:n_train]
-            test_idx = indices[n_train:]
-
-            try:
-                result = run_single_iteration(
-                    algo_class, algo_params, X[train_idx], y[train_idx], X[test_idx], y[test_idx],
-                    store_coefs=True
-                )
-                result["iteration"] = i
-                result["algo"] = algo_name
-                algo_results.append(result)
-                coef_matrix.append(result["coef"])
-
-                if (i + 1) % 10 == 0 or i == 0:
-                    recent_mse = np.mean([r["test_mse"] for r in algo_results[-10:]])
-                    recent_size = np.mean([r["model_size"] for r in algo_results[-10:]])
-                    print(f"  Iter {i+1}/{n_iter}: MSE={recent_mse:.4f}, Size={recent_size:.1f}")
-
-            except Exception as e:
-                print(f"  ERROR in iteration {i}: {e}")
-                continue
-
-        if algo_results:
-            results_df = pd.DataFrame(algo_results)
-            all_results[algo_name] = results_df
-
-            # Compute selection frequency
-            coef_matrix = np.array(coef_matrix)
-            selection_matrix = np.abs(coef_matrix) > 1e-6
-            selection_freq = np.mean(selection_matrix, axis=0)
-            selection_count = np.sum(selection_matrix, axis=0)
-            all_selection_freq[algo_name] = selection_freq
-            all_coef_matrices[algo_name] = coef_matrix
-
-            # Top features
-            freq_order = np.argsort(selection_freq)[::-1]
-            top_features = [(i, selection_freq[i], int(selection_count[i])) for i in freq_order[:20]]
-
-            print(f"\n[realdata] Top 10 most frequently selected features for {algo_name}:")
-            for rank, (feat_idx, freq, count) in enumerate(top_features[:10], 1):
-                print(f"  {rank}. Feature {feat_idx}: selected {count}/{n_iter} times ({freq*100:.1f}%)")
-
-            summaries[algo_name] = {
-                "test_mse": {
-                    "mean": float(results_df["test_mse"].mean()),
-                    "std": float(results_df["test_mse"].std()),
-                },
-                "model_size": {
-                    "mean": float(results_df["model_size"].mean()),
-                    "std": float(results_df["model_size"].std()),
-                },
-                "top_features": top_features,
-            }
-
-    if not summaries:
-        raise RuntimeError("No successful algorithms")
-
-    return {
-        "results": all_results,
-        "summaries": summaries,
-        "selection_freq": all_selection_freq,
-        "coef_matrices": all_coef_matrices,
-    }
-
-
 # ============================================================================
 # Report Generation
 # ============================================================================
@@ -683,9 +679,12 @@ def generate_report(result, exp_dir, config, is_comparison=False):
         f.write(f"**Date**: {datetime.now().strftime('%Y-%m-%d')}\n")
         f.write(f"**Dataset**: {config['dataset']} - {DATASET_REGISTRY[config['dataset']]['description']}\n")
         f.write(f"**Mode**: {config['mode']}\n")
+        f.write(f"**CV Folds**: {config.get('cv_folds', 'N/A')}\n")
+        f.write(f"**Train Ratio**: {config.get('train_ratio', 'N/A')}\n")
+        f.write(f"**Iterations**: {config.get('n_iter', 'N/A')}\n\n")
 
         if config['mode'] == 'rolling':
-            f.write(f"**Window Size**: {config['window_size']} months\n")
+            f.write(f"**Window Size**: {config.get('window_size', 120)} months\n")
             n_pred = result['summary'].get('n_predictions', 'N/A')
             f.write(f"**Number of Predictions**: {n_pred}\n\n")
 
@@ -698,12 +697,6 @@ def generate_report(result, exp_dir, config, is_comparison=False):
                     mae = summary['mae']
                     size = f"{summary['model_size']['mean']:.1f} ± {summary['model_size']['std']:.1f}"
                     f.write(f"| {algo_name} | {rmse:.4f} | {mae:.4f} | {size} |\n")
-
-                f.write("\n### Key Findings\n\n")
-                best_rmse = min(result["summaries"].keys(), key=lambda x: result["summaries"][x]['rmse'])
-                best_size = min(result["summaries"].keys(), key=lambda x: result["summaries"][x]['model_size']['mean'])
-                f.write(f"- **Best RMSE**: {best_rmse} ({result['summaries'][best_rmse]['rmse']:.4f})\n")
-                f.write(f"- **Most Sparse**: {best_size} ({result['summaries'][best_size]['model_size']['mean']:.1f} features)\n")
             else:
                 summary = result["summary"]
                 f.write(f"## Algorithm: {config['algo']}\n\n")
@@ -715,11 +708,8 @@ def generate_report(result, exp_dir, config, is_comparison=False):
                 f.write(f"| Model Size (mean±std) | {summary['model_size']['mean']:.1f} ± {summary['model_size']['std']:.1f} |\n")
 
         else:  # random mode
-            f.write(f"**Iterations**: {config['n_iter']}\n")
-            f.write(f"**Train Ratio**: {config['train_ratio']}\n\n")
-
             if is_comparison:
-                f.write("## Model Comparison (Random Split)\n\n")
+                f.write("## Model Comparison (Random Split with Internal CV)\n\n")
                 f.write("| Model | Test MSE (mean±std) | Model Size (mean±std) |\n")
                 f.write("|-------|---------------------|----------------------|\n")
                 for algo_name, summary in result["summaries"].items():
@@ -742,7 +732,7 @@ def generate_report(result, exp_dir, config, is_comparison=False):
                         if top_feats:
                             f.write(f"**{algo_name}**:\n")
                             for rank, (feat_idx, freq, count) in enumerate(top_feats, 1):
-                                n_iter = config['n_iter']
+                                n_iter = config.get('n_iter', 'N/A')
                                 f.write(f"  {rank}. Feature {feat_idx}: {count}/{n_iter} ({freq*100:.1f}%)\n")
                             f.write("\n")
             else:
@@ -753,17 +743,6 @@ def generate_report(result, exp_dir, config, is_comparison=False):
                 f.write("|--------|------------|\n")
                 f.write(f"| Test MSE | {summary['test_mse']['mean']:.4f} ± {summary['test_mse']['std']:.4f} |\n")
                 f.write(f"| Model Size | {summary['model_size']['mean']:.1f} ± {summary['model_size']['std']:.1f} |\n")
-
-                # Feature Selection Frequency
-                if "selection_freq" in result:
-                    f.write("\n## Feature Selection Frequency Analysis\n\n")
-                    top_feats = summary.get("selection_frequency", {}).get("top_features", [])[:20]
-                    if top_feats:
-                        f.write("### Top 20 Most Frequently Selected Features\n\n")
-                        f.write("| Rank | Feature | Count | Frequency |\n")
-                        f.write("|------|---------|-------|-----------|\n")
-                        for rank, (feat_idx, freq, count) in enumerate(top_feats, 1):
-                            f.write(f"| {rank} | {feat_idx} | {count} | {freq*100:.1f}% |\n")
 
         f.write("\n---\n")
         f.write(f"*Report generated: {datetime.now().isoformat()}*\n")
@@ -788,6 +767,120 @@ def _make_json_serializable(obj):
         return obj
 
 
+def save_selection_frequency(result, exp_dir, config, is_comparison=False):
+    """Save feature selection frequency data for visualization.
+
+    Saves:
+    - selection_frequency.csv: feature index, selection count, selection frequency for each algo
+    - selection_frequency_long.csv: long format (melted) for ggplot2/seaborn faceting
+    """
+    if is_comparison:
+        selection_freq = result.get("selection_freq", {})
+        selection_count = result.get("selection_count", {})
+        n_iter = config.get("n_iter", 100)
+
+        if not selection_freq:
+            return
+
+        algo_names = list(selection_freq.keys())
+        n_features = len(selection_freq[algo_names[0]])
+
+        # Wide format: rows=features, cols=algorithms
+        freq_data = []
+        for feat_idx in range(n_features):
+            row = {"feature": feat_idx}
+            for algo_name in algo_names:
+                row[f"{algo_name}_freq"] = selection_freq[algo_name][feat_idx]
+                row[f"{algo_name}_count"] = selection_count[algo_name][feat_idx]
+            freq_data.append(row)
+
+        freq_df = pd.DataFrame(freq_data)
+        freq_path = exp_dir / "selection_frequency.csv"
+        freq_df.to_csv(freq_path, index=False)
+
+        # Long format for faceted plotting (ggplot2, seaborn, plotly)
+        long_data = []
+        for algo_name in algo_names:
+            for feat_idx in range(n_features):
+                long_data.append({
+                    "feature": feat_idx,
+                    "algo": algo_name,
+                    "freq": selection_freq[algo_name][feat_idx],
+                    "count": selection_count[algo_name][feat_idx],
+                    "n_iter": n_iter,
+                })
+        long_df = pd.DataFrame(long_data)
+        long_path = exp_dir / "selection_frequency_long.csv"
+        long_df.to_csv(long_path, index=False)
+
+        # Top features summary (sorted by avg frequency across algorithms)
+        avg_freq = np.mean([selection_freq[a] for a in algo_names], axis=0)
+        top_n = min(50, n_features)
+        top_indices = np.argsort(avg_freq)[::-1][:top_n]
+
+        top_data = []
+        for rank, feat_idx in enumerate(top_indices, 1):
+            row = {"rank": rank, "feature": feat_idx, "avg_freq": avg_freq[feat_idx]}
+            for algo_name in algo_names:
+                row[f"{algo_name}_freq"] = selection_freq[algo_name][feat_idx]
+                row[f"{algo_name}_count"] = selection_count[algo_name][feat_idx]
+            top_data.append(row)
+
+        top_df = pd.DataFrame(top_data)
+        top_path = exp_dir / "selection_frequency_top50.csv"
+        top_df.to_csv(top_path, index=False)
+
+        print(f"[realdata] Selection frequency saved:")
+        print(f"  - {freq_path} (wide format)")
+        print(f"  - {long_path} (long format for faceting)")
+        print(f"  - {top_path} (top 50 features by avg frequency)")
+
+    else:
+        # Single algorithm mode
+        selection_freq = result.get("selection_freq")
+        selection_count = result.get("selection_count")
+        n_iter = config.get("n_iter", 100)
+        algo_name = config.get("algo", "unknown")
+
+        if selection_freq is None:
+            return
+
+        n_features = len(selection_freq)
+
+        # Wide format
+        freq_data = []
+        for feat_idx in range(n_features):
+            freq_data.append({
+                "feature": feat_idx,
+                "freq": selection_freq[feat_idx],
+                "count": selection_count[feat_idx],
+                "n_iter": n_iter,
+            })
+        freq_df = pd.DataFrame(freq_data)
+        freq_path = exp_dir / "selection_frequency.csv"
+        freq_df.to_csv(freq_path, index=False)
+
+        # Top features
+        top_n = min(50, n_features)
+        top_indices = np.argsort(selection_freq)[::-1][:top_n]
+        top_data = []
+        for rank, feat_idx in enumerate(top_indices, 1):
+            top_data.append({
+                "rank": rank,
+                "feature": feat_idx,
+                "freq": selection_freq[feat_idx],
+                "count": selection_count[feat_idx],
+                "n_iter": n_iter,
+            })
+        top_df = pd.DataFrame(top_data)
+        top_path = exp_dir / "selection_frequency_top50.csv"
+        top_df.to_csv(top_path, index=False)
+
+        print(f"[realdata] Selection frequency saved:")
+        print(f"  - {freq_path}")
+        print(f"  - {top_path} (top 50)")
+
+
 def save_results(result, exp_dir, config, is_comparison=False):
     """Save experiment results to files."""
     if is_comparison:
@@ -795,7 +888,6 @@ def save_results(result, exp_dir, config, is_comparison=False):
             raw_path = exp_dir / f"raw_{algo_name}.csv"
             df.to_csv(raw_path, index=False)
 
-            # Save selected features per iteration as JSON
             features_path = exp_dir / f"selected_features_{algo_name}.json"
             features_data = []
             if "selected_features" in df.columns:
@@ -806,11 +898,14 @@ def save_results(result, exp_dir, config, is_comparison=False):
         summary_path = exp_dir / "summary.json"
         with open(summary_path, "w") as f:
             json.dump(_make_json_serializable(result["summaries"]), f, indent=2)
+
+        # Save selection frequency for visualization
+        save_selection_frequency(result, exp_dir, config, is_comparison=True)
+
     else:
         raw_path = exp_dir / "raw.csv"
         result["results"].to_csv(raw_path, index=False)
 
-        # Save selected features per iteration as JSON
         features_path = exp_dir / "selected_features.json"
         features_data = []
         if "selected_features" in result["results"].columns:
@@ -821,148 +916,11 @@ def save_results(result, exp_dir, config, is_comparison=False):
         summary_path = exp_dir / "summary.json"
         with open(summary_path, "w") as f:
             json.dump(_make_json_serializable(result["summary"]), f, indent=2)
+
+        # Save selection frequency for visualization
+        save_selection_frequency(result, exp_dir, config, is_comparison=False)
+
     print(f"[realdata] Results saved to {exp_dir}")
-
-
-def plot_selection_frequency(result, exp_dir, config, is_comparison=False):
-    """Generate bar chart of feature selection frequency.
-
-    Creates a bar chart showing how often each feature was selected
-    across all iterations. This demonstrates feature selection stability.
-
-    Visualization strategy:
-    1. Find all features with >10% selection frequency in ANY model
-    2. Sort by the first model's frequency (establishing "home advantage")
-    3. Stack vertically for comparison - reveals signal vs noise clearly
-    """
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        print("[realdata] matplotlib not available, skipping frequency plot")
-        return
-
-    if is_comparison:
-        # Multi-model comparison with shared X-axis sorted by first model
-        selection_freq = result.get("selection_freq", {})
-        if not selection_freq:
-            return
-
-        n_iter = config['n_iter']
-        model_names = list(selection_freq.keys())
-
-        # Step 1: Find union of features with >10% frequency in ANY model
-        threshold = 0.10
-        union_features = set()
-        for algo_name, freq in selection_freq.items():
-            above_threshold = set(np.where(freq > threshold)[0])
-            union_features.update(above_threshold)
-
-        if not union_features:
-            print("[realdata] No features above 10% threshold in any model")
-            return
-
-        union_features = sorted(union_features)
-        n_shared = len(union_features)
-        print(f"[realdata] Shared features (>10%% in any model): {n_shared}")
-
-        # Step 2: Sort by first model's frequency (home advantage)
-        first_model = model_names[0]
-        first_freq = selection_freq[first_model]
-
-        # Create feature index -> sort key mapping
-        # Features with higher freq in first model come first
-        sort_key = {f: first_freq[f] for f in union_features}
-        sorted_features = sorted(union_features, key=lambda f: sort_key[f], reverse=True)
-
-        # Build frequency matrix for plotting
-        freq_matrix = np.zeros((len(model_names), n_shared))
-        for i, algo_name in enumerate(model_names):
-            for j, feat_idx in enumerate(sorted_features):
-                freq_matrix[i, j] = selection_freq[algo_name][feat_idx] * 100
-
-        # Step 3: Create figure with stacked subplots
-        fig, axes = plt.subplots(len(model_names), 1, figsize=(16, 4 * len(model_names)), squeeze=False)
-
-        # Color scheme - use distinct colors for each model
-        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#3B1F2B']
-
-        for i, (algo_name, ax) in enumerate(zip(model_names, axes[:, 0])):
-            bars = ax.bar(range(n_shared), freq_matrix[i], color=colors[i % len(colors)], alpha=0.85)
-
-            ax.set_ylabel('Selection Freq (%)', fontsize=10)
-            ax.set_title(f'{algo_name}', fontsize=12, fontweight='bold')
-            ax.set_xlim(-0.5, n_shared - 0.5)
-            ax.set_ylim(0, 105)
-            ax.axhline(y=50, color='red', linestyle='--', alpha=0.4, linewidth=1)
-            ax.axhline(y=90, color='green', linestyle='--', alpha=0.4, linewidth=1)
-
-            # X-axis: show every 5th label to avoid crowding
-            tick_positions = list(range(0, n_shared, max(1, n_shared // 20)))
-            ax.set_xticks(tick_positions)
-            ax.set_xticklabels([f'F{sorted_features[k]}' for k in tick_positions], rotation=45, fontsize=8)
-
-            # Mark "pillar" features (90%+) and "noise" features (0% in first model)
-            first_model_freq = freq_matrix[0]
-            pillar_count = np.sum(first_model_freq >= 90)
-            noise_count = np.sum(first_model_freq == 0)
-
-            # Add annotation for pillars
-            if pillar_count > 0:
-                ax.annotate(f'{pillar_count} pillars\n(90%+)', xy=(0.02, 0.95),
-                           xycoords='axes fraction', fontsize=9, color='green', va='top')
-            if noise_count > 0:
-                ax.annotate(f'{noise_count} noise\n(0% in 1st)', xy=(0.98, 0.95),
-                           xycoords='axes fraction', fontsize=9, color='red', va='top', ha='right')
-
-        axes[-1, 0].set_xlabel('Features (sorted by 1st model frequency, left=highest)', fontsize=10)
-
-        plt.suptitle(f'Feature Selection Frequency Comparison\n(n={n_iter} iterations, {n_shared} shared features)',
-                    fontsize=14, fontweight='bold', y=1.02)
-        plt.tight_layout()
-        fig.savefig(exp_dir / "selection_frequency_comparison.png", dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"[realdata] Frequency plot saved to {exp_dir / 'selection_frequency_comparison.png'}")
-
-    else:
-        # Single model: bar chart of all features (or top N)
-        selection_freq = result.get("selection_freq")
-        if selection_freq is None:
-            return
-
-        n_features = len(selection_freq)
-        n_iter = config['n_iter']
-
-        # For high-dimensional data, only show top features
-        if n_features > 100:
-            top_n = 100
-            top_indices = np.argsort(selection_freq)[::-1][:top_n]
-            top_freq = selection_freq[top_indices]
-
-            fig, ax = plt.subplots(figsize=(14, 6))
-            bars = ax.bar(range(top_n), top_freq * 100, color='steelblue', alpha=0.8)
-            ax.set_ylabel('Selection Frequency (%)')
-            ax.set_xlabel('Feature Rank')
-            ax.set_title(f'{config["algo"]} - Top {top_n} Feature Selection Frequency ({n_iter} iterations)')
-            ax.set_xticks(range(top_n))
-            ax.set_xticklabels([f'F{i}' for i in top_indices], rotation=45, fontsize=8)
-            ax.axhline(y=50, color='red', linestyle='--', alpha=0.5, label='50% threshold')
-            ax.axhline(y=90, color='green', linestyle='--', alpha=0.5, label='90% threshold (stable)')
-            ax.legend()
-        else:
-            # Show all features
-            fig, ax = plt.subplots(figsize=(max(14, n_features * 0.3), 6))
-            bars = ax.bar(range(n_features), selection_freq * 100, color='steelblue', alpha=0.8)
-            ax.set_ylabel('Selection Frequency (%)')
-            ax.set_xlabel('Feature Index')
-            ax.set_title(f'{config["algo"]} - Feature Selection Frequency ({n_iter} iterations)')
-            ax.set_xticks(range(n_features))
-            ax.set_xticklabels([f'{i}' for i in range(n_features)], rotation=90, fontsize=6)
-            ax.axhline(y=50, color='red', linestyle='--', alpha=0.5)
-
-        plt.tight_layout()
-        fig.savefig(exp_dir / "selection_frequency.png", dpi=150)
-        plt.close()
-        print(f"[realdata] Frequency plot saved to {exp_dir / 'selection_frequency.png'}")
 
 
 # ============================================================================
@@ -972,84 +930,142 @@ def plot_selection_frequency(result, exp_dir, config, is_comparison=False):
 def main():
     args = parse_args()
 
-    # Parse algorithm(s)
-    if args.compare:
-        algo_names = [a.strip() for a in args.compare.split(",")]
-        is_comparison = len(algo_names) > 1
-        experiment_name = f"{args.dataset}_{args.mode}_{'-'.join(algo_names)}"
-    elif args.algo:
-        algo_names = [args.algo]
-        is_comparison = False
-        experiment_name = f"{args.dataset}_{args.mode}_{args.algo}"
+    # Load from config file if provided
+    if args.config:
+        config = load_config(args.config)
+        if "dataset" not in config:
+            print("[realdata] ERROR: Config file must specify 'dataset'")
+            return 1
+        if "compare_models" not in config and "algo" not in config:
+            print("[realdata] ERROR: Config file must specify 'compare_models' or 'algo'")
+            return 1
+
+        experiment_name = config.get("experiment", f"realdata_{config['dataset']}")
+        algo_configs = config.get("compare_models", [])
+        if algo_configs:
+            algo_names = [a["algo"] for a in algo_configs]
+            is_comparison = len(algo_names) > 1
+            algo_params_map = {a["algo"]: a.get("params", {}) for a in algo_configs}
+        else:
+            algo_names = [config["algo"]]
+            is_comparison = False
+            algo_params_map = {config["algo"]: config.get("algo_params", {})}
+
+        mode = config.get("mode", "random")
+        window_size = config.get("window_size", 120)
+        n_iter = config.get("n_iter", 100)
+        train_ratio = config.get("train_ratio", 0.8)
+        seed_base = config.get("seed_base", 42)
+        cv_folds = config.get("cv_folds", 10)
+        output_dir = config.get("output_dir", "experiments/results/realdata")
+        preprocess = config.get("preprocess", None)
+
+        config_for_save = {
+            "experiment": experiment_name,
+            "dataset": config["dataset"],
+            "algo": ",".join(algo_names) if is_comparison else algo_names[0],
+            "mode": mode,
+            "window_size": window_size,
+            "n_iter": n_iter,
+            "train_ratio": train_ratio,
+            "seed_base": seed_base,
+            "cv_folds": cv_folds,
+            "output_dir": output_dir,
+            "compare_models": algo_configs,
+        }
+        if preprocess:
+            config_for_save["preprocess"] = preprocess
+        config_for_save.update(config)
+
+        dataset = config["dataset"]
+        dry_run = args.dry_run
+
     else:
-        print("[realdata] ERROR: Must specify either --algo or --compare")
-        return 1
+        if args.compare:
+            algo_names = [a.strip() for a in args.compare.split(",")]
+            is_comparison = len(algo_names) > 1
+            experiment_name = f"{args.dataset}_{args.mode}_{'-'.join(algo_names)}"
+        elif args.algo:
+            algo_names = [args.algo]
+            is_comparison = False
+            experiment_name = f"{args.dataset}_{args.mode}_{args.algo}"
+        else:
+            print("[realdata] ERROR: Must specify either --algo/--compare or --config")
+            return 1
 
-    config = {
-        "experiment": experiment_name,
-        "dataset": args.dataset,
-        "algo": algo_names[0] if not is_comparison else ",".join(algo_names),
-        "mode": args.mode,
-        "window_size": args.window_size,
-        "n_iter": args.n_iter,
-        "train_ratio": args.train_ratio,
-        "random_seed": args.random_seed,
-        "output_dir": args.output_dir,
-    }
+        config_for_save = {
+            "experiment": experiment_name,
+            "dataset": args.dataset,
+            "algo": algo_names[0] if not is_comparison else ",".join(algo_names),
+            "mode": args.mode,
+            "window_size": args.window_size,
+            "n_iter": args.n_iter,
+            "train_ratio": args.train_ratio,
+            "seed_base": args.random_seed,
+            "cv_folds": 10,
+            "output_dir": args.output_dir,
+        }
+        algo_params_map = {}
+        dataset = args.dataset
+        mode = args.mode
+        window_size = args.window_size
+        n_iter = args.n_iter
+        train_ratio = args.train_ratio
+        seed_base = args.random_seed
+        cv_folds = 10
+        output_dir = args.output_dir
+        preprocess = None
+        dry_run = args.dry_run
 
-    if args.dry_run:
+    if dry_run:
         print("[realdata] Dry-run mode - validation only")
-        print(f"[realdata] Config: {config}")
+        print(f"[realdata] Config: {config_for_save}")
+        if algo_params_map:
+            print(f"[realdata] Algorithm params: {algo_params_map}")
         return 0
 
     try:
-        exp_dir = generate_experiment_dir(config)
+        exp_dir = generate_experiment_dir(config_for_save)
         print(f"[realdata] Output directory: {exp_dir}")
-        save_config(config, exp_dir)
+        save_config(config_for_save, exp_dir)
 
-        # Run experiment based on mode
-        if args.mode == "rolling":
+        if mode == "rolling":
             if is_comparison:
-                result = run_comparison_rolling(
-                    dataset_name=args.dataset,
-                    algo_names=algo_names,
-                    window_size=args.window_size,
-                    random_seed=args.random_seed,
-                )
-            else:
-                result = run_experiment_rolling(
-                    dataset_name=args.dataset,
-                    algo_name=algo_names[0],
-                    window_size=args.window_size,
-                    random_seed=args.random_seed,
-                )
+                print("[realdata] Comparison mode not supported for rolling window")
+                return 1
+            result = run_experiment_rolling(
+                dataset_name=dataset,
+                algo_name=algo_names[0],
+                algo_params=algo_params_map.get(algo_names[0], {}),
+                window_size=window_size,
+                seed_base=seed_base,
+            )
         else:  # random mode
             if is_comparison:
                 result = run_comparison_random(
-                    dataset_name=args.dataset,
+                    dataset_name=dataset,
                     algo_names=algo_names,
-                    n_iter=args.n_iter,
-                    train_ratio=args.train_ratio,
-                    random_seed=args.random_seed,
+                    algo_params_map=algo_params_map,
+                    n_iter=n_iter,
+                    train_ratio=train_ratio,
+                    seed_base=seed_base,
+                    cv_folds=cv_folds,
+                    preprocess=preprocess,
                 )
             else:
                 result = run_experiment_random(
-                    dataset_name=args.dataset,
+                    dataset_name=dataset,
                     algo_name=algo_names[0],
-                    n_iter=args.n_iter,
-                    train_ratio=args.train_ratio,
-                    random_seed=args.random_seed,
+                    algo_params=algo_params_map.get(algo_names[0], {}),
+                    n_iter=n_iter,
+                    train_ratio=train_ratio,
+                    seed_base=seed_base,
+                    cv_folds=cv_folds,
+                    preprocess=preprocess,
                 )
 
-        save_results(result, exp_dir, config, is_comparison=is_comparison)
-        generate_report(result, exp_dir, config, is_comparison=is_comparison)
-
-        # Generate feature selection frequency plot (only for random mode)
-        if args.mode == "random":
-            try:
-                plot_selection_frequency(result, exp_dir, config, is_comparison=is_comparison)
-            except Exception as e:
-                print(f"[realdata] Warning: Could not generate frequency plot: {e}")
+        save_results(result, exp_dir, config_for_save, is_comparison=is_comparison)
+        generate_report(result, exp_dir, config_for_save, is_comparison=is_comparison)
 
         print(f"\n[realdata] Completed!")
         print(f"[realdata] Results: {exp_dir}")

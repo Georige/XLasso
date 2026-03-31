@@ -3,7 +3,7 @@ Adaptive Lasso 自适应Lasso实现
 参考: Zou (2006). "The adaptive lasso and its oracle properties."
 """
 import numpy as np
-from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, Ridge
+from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, Ridge, lasso_path
 from sklearn.utils.validation import check_X_y, check_array
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import check_cv
@@ -233,12 +233,13 @@ class AdaptiveLassoCV(AdaptiveLasso):
         nselected_matrix = np.zeros((n_gamma, n_alpha, n_folds))
 
         eps = 1e-10
+        n_jobs = self.n_jobs if self.n_jobs is not None else -1
 
         # ============================================================
-        # 阶段一：K折严格内部寻优（严格隔离，无泄露）- 并行版本
+        # 阶段一：K折严格内部寻优（严格隔离，无泄露）
+        # 外层 fold 串行，内层 gamma 并行
         # ============================================================
-        def _compute_single_fold(fold_idx, train_idx, val_idx):
-            """Compute error matrix for a single fold (used for parallel execution)."""
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
             X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
 
@@ -280,12 +281,8 @@ class AdaptiveLassoCV(AdaptiveLasso):
             # 计算自适应权重
             abs_beta = np.clip(np.abs(beta_ols), eps, None)
 
-            # 存储该 fold 的结果
-            fold_errors = np.full((n_gamma, n_alpha), np.inf)
-            fold_nselected = np.zeros((n_gamma, n_alpha))
-
-            # 对每个gamma分别计算
-            for gamma_idx, gamma in enumerate(self.gammas):
+            # 内层 gamma 并行
+            def _eval_gamma(gamma_idx, gamma):
                 weights = 1.0 / (abs_beta ** gamma)
 
                 # 空间重构
@@ -302,19 +299,40 @@ class AdaptiveLassoCV(AdaptiveLasso):
                 else:
                     alphas = self.alphas
 
-                # 遍历alpha计算验证集MSE
-                for alpha_idx, alpha in enumerate(alphas):
-                    if self.family.lower() == "gaussian":
-                        model = Lasso(alpha=alpha, fit_intercept=self.fit_intercept,
-                                     max_iter=self.max_iter, tol=self.tol)
-                        model.fit(X_adaptive_tr, y_tr, sample_weight=sw_tr)
-                        coef_scaled = model.coef_
-                        intercept_ = model.intercept_ if self.fit_intercept else 0.0
+                fold_gamma_errors = np.full(n_alpha, np.inf)
+                fold_gamma_nselected = np.zeros(n_alpha)
 
-                        # 还原系数并预测
-                        coef_ = coef_scaled / weights
-                        y_pred_va = X_va @ coef_ + intercept_
+                if self.family.lower() == "gaussian":
+                    # lasso_path 不支持 sample_weight，有权重时回退到逐个 Lasso
+                    if sw_tr is None:
+                        # 用 lasso_path 一次算出全部 alpha 系数路径（向量化加速）
+                        # 在 transformed space 直接预测（与 AFL-CV-EN 一致）
+                        _, coefs_path, _ = lasso_path(
+                            X_adaptive_tr, y_tr,
+                            alphas=alphas,
+                            max_iter=self.max_iter,
+                            tol=self.tol,
+                        )
+                        preds = X_adaptive_va @ coefs_path
+                        mse_path = np.mean((y_va[:, np.newaxis] - preds) ** 2, axis=0)
+                        fold_gamma_errors[:] = mse_path
+                        fold_gamma_nselected[:] = np.sum(coefs_path != 0, axis=0)
                     else:
+                        # 有 sample_weight：逐个 Lasso（可正确处理权重）
+                        for alpha_idx, alpha in enumerate(alphas):
+                            model = Lasso(alpha=alpha, fit_intercept=self.fit_intercept,
+                                         max_iter=self.max_iter, tol=self.tol)
+                            model.fit(X_adaptive_tr, y_tr, sample_weight=sw_tr)
+                            coef_scaled = model.coef_
+                            intercept_ = model.intercept_ if self.fit_intercept else 0.0
+                            coef_ = coef_scaled / weights
+                            y_pred_va = X_va @ coef_ + intercept_
+                            mse = np.mean((y_va - y_pred_va) ** 2)
+                            fold_gamma_errors[alpha_idx] = mse
+                            fold_gamma_nselected[alpha_idx] = np.sum(coef_scaled != 0)
+                else:
+                    # 分类：仍用逐个 LogisticRegression（无等效 path 函数）
+                    for alpha_idx, alpha in enumerate(alphas):
                         model = LogisticRegression(
                             penalty='l1', C=1.0/alpha if alpha > 0 else 1e10,
                             fit_intercept=self.fit_intercept, max_iter=self.max_iter,
@@ -329,31 +347,31 @@ class AdaptiveLassoCV(AdaptiveLasso):
                         z_va = X_va @ coef_ + intercept_
                         y_pred_va = 1 / (1 + np.exp(-np.clip(z_va, -30, 30)))
 
-                    # 计算验证集误差
-                    if self.scoring == 'neg_mean_squared_error':
-                        mse = np.mean((y_va - y_pred_va) ** 2)
-                        fold_errors[gamma_idx, alpha_idx] = mse
-                    elif self.scoring == 'roc_auc' and self.family.lower() == "binomial":
-                        try:
-                            auc = roc_auc_score(y_va, y_pred_va)
-                            fold_errors[gamma_idx, alpha_idx] = -auc
-                        except:
-                            fold_errors[gamma_idx, alpha_idx] = np.inf
+                        if self.scoring == 'neg_mean_squared_error':
+                            mse = np.mean((y_va - y_pred_va) ** 2)
+                            fold_gamma_errors[alpha_idx] = mse
+                        elif self.scoring == 'roc_auc' and self.family.lower() == "binomial":
+                            try:
+                                auc = roc_auc_score(y_va, y_pred_va)
+                                fold_gamma_errors[alpha_idx] = -auc
+                            except:
+                                fold_gamma_errors[alpha_idx] = np.inf
 
-                    # 追踪非零系数数量
-                    fold_nselected[gamma_idx, alpha_idx] = np.sum(coef_scaled != 0)
+                        fold_gamma_nselected[alpha_idx] = np.sum(coef_scaled != 0)
 
-            return fold_idx, fold_errors, fold_nselected
+                return gamma_idx, fold_gamma_errors, fold_gamma_nselected
 
-        # 使用 joblib 并行执行所有 fold
-        n_jobs = self.n_jobs if self.n_jobs is not None else -1
-        parallel_results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(_compute_single_fold)(fold_idx, train_idx, val_idx)
-            for fold_idx, (train_idx, val_idx) in enumerate(splits)
-        )
+            gamma_results = Parallel(n_jobs=n_jobs, verbose=0)(
+                delayed(_eval_gamma)(gamma_idx, gamma)
+                for gamma_idx, gamma in enumerate(self.gammas)
+            )
 
-        # 收集结果
-        for fold_idx, fold_errors, fold_nselected in parallel_results:
+            fold_errors = np.full((n_gamma, n_alpha), np.inf)
+            fold_nselected = np.zeros((n_gamma, n_alpha))
+            for gamma_idx, gamma_errors, gamma_nselected in gamma_results:
+                fold_errors[gamma_idx, :] = gamma_errors
+                fold_nselected[gamma_idx, :] = gamma_nselected
+
             error_matrix[:, :, fold_idx] = fold_errors
             nselected_matrix[:, :, fold_idx] = fold_nselected
 

@@ -48,6 +48,8 @@ from .NLasso import (
     AdaptiveFlippedLassoEBIC_Simple,
     ConfidenceCalibratedAFL, ConfidenceCalibratedAFLClassifier,
     APAFLRegressor, APAFLClassifier,
+    PFLRegressor, PFLRegressorCV,
+    PFLClassifier, PFLClassifierCV,
 )
 from .NLasso import metrics as nlasso_metrics
 
@@ -503,13 +505,15 @@ except ImportError:
     LassoCV = None
 
 try:
-    from .uniLasso import UniLasso, UniLassoCV
+    from .uniLasso import UniLasso, UniLassoCV, UniLassoFit, UniLassoCVFit
     from .postlasso import PostLasso
     HAS_UNILASSO = True
 except ImportError:
     HAS_UNILASSO = False
     UniLasso = None
     UniLassoCV = None
+    UniLassoFit = None
+    UniLassoCVFit = None
     PostLasso = None
 
 ALGO_REGISTRY = {
@@ -533,12 +537,19 @@ ALGO_REGISTRY = {
     # AP-AFL (Asymmetrically Penalized Adaptive Flipped Lasso)
     "apafl_regressor": APAFLRegressor,
     "apafl_classifier": APAFLClassifier,
+    # PFL (Pure Flipped Lasso)
+    "pfl_regressor": PFLRegressor,
+    "pfl_regressor_cv": PFLRegressorCV,
+    "pfl_classifier": PFLClassifier,
+    "pfl_classifier_cv": PFLClassifierCV,
     # XLasso (fit_uni/cv_uni)
     "xlasso": XLasso,
     "xlasso_cv": XLassoCV,
     # UniLasso (fit_unilasso/cv_unilasso)
     "unilasso": UniLasso,
     "unilasso_cv": UniLassoCV,
+    "fit_unilasso": UniLassoFit,
+    "cv_unilasso": UniLassoCVFit,
     # Standard Lasso
     "lasso": Lasso,
     "lasso_cv": LassoCV,
@@ -572,6 +583,11 @@ __all__ = [
     # AP-AFL
     "APAFLRegressor",
     "APAFLClassifier",
+    # PFL (Pure Flipped Lasso)
+    "PFLRegressor",
+    "PFLRegressorCV",
+    "PFLClassifier",
+    "PFLClassifierCV",
     "nlasso_metrics",
     # Other Lasso variants
     "AdaptiveLasso",

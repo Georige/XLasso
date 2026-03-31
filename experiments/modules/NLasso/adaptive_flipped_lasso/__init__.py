@@ -15,6 +15,7 @@ from .base import (
     ConfidenceCalibratedAFLClassifier,
 )
 from .apa_fl import APAFLRegressor, APAFLClassifier
+from .pf_lasso import PFLRegressor, PFLClassifier, PFLRegressorCV, PFLClassifierCV
 
 __all__ = [
     'AdaptiveFlippedLasso',
@@ -31,4 +32,9 @@ __all__ = [
     # AP-AFL
     'APAFLRegressor',
     'APAFLClassifier',
+    # PFL (Pure Flipped Lasso)
+    'PFLRegressor',
+    'PFLClassifier',
+    'PFLRegressorCV',
+    'PFLClassifierCV',
 ]

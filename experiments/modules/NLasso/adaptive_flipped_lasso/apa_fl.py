@@ -10,7 +10,7 @@ AP-AFL: Asymmetrically Penalized Adaptive Flipped Lasso
     Stage 3: 全量空间终极校准 (1-SE Rule on Full Data)
 
 特性：
-    - 容错性：通过 κ 倍惩罚的逆流变量，即使 Ridge 先验给出错误符号也能跨过软墙
+    - 迷信先验：κ 越大，逆向惩罚 (1/κ) 越小，模型越依赖 Ridge 先验方向，对符号错误的容忍度越低
     - 解耦优势：Stage 1/2 专注 γ（权重拓扑），Stage 3 专注 α（稀疏尺度）
     - 单重收缩：只在最后一步施加 1-SE 法则，避免二次征税
 """
@@ -37,8 +37,8 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
     参数
     ----
     kappa : float, default=100.0
-        非对称因子。逆流变量（阴面）承受 κ 倍惩罚。
-        建议值：50 或 100。值越大，对错误符号的容忍度越高。
+        非对称因子。κ 越大，逆流惩罚 1/κ 越小，模型越迷信 Ridge 先验，对符号错误的容忍度越低。
+        κ → ∞ 时退化为纯 Flipped Lasso（永不反转）；κ = 1 时退化为对称 Adaptive Lasso（完全自由）。
     gamma_list : tuple, default=(0.3, 0.5, 1.0, 2.0)
         自适应权重的指数候选网格。
     lambda_ridge_list : tuple, default=(0.1, 1.0, 10.0, 100.0)
@@ -109,6 +109,7 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
         self.scaler_ = None
         self.is_fitted_ = False
         self.n_features_in_ = None
+        self.signs_ = None
 
     def get_params(self, deep: bool = True) -> dict:
         return {
@@ -215,7 +216,7 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
 
         return weights
 
-    def _stage1_profile_cv(self, X, y, cv_splits=None):
+    def _stage1_profile_cv(self, X, y, cv_splits=None, beta_true=None):
         """
         Stage 1: 严格隔离的折内结构探路
 
@@ -230,6 +231,9 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
         n_folds = self.cv if cv_splits is None else len(cv_splits)
         eps = self.eps
 
+        # 准备真信号索引（用于计算符号准确率）
+        true_signals_idx = np.where(beta_true != 0)[0] if beta_true is not None else None
+
         # CV splits
         if cv_splits is not None:
             splits = cv_splits
@@ -240,6 +244,42 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
         # 预分配误差矩阵
         error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
         nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
+        # 存储每折的符号准确率
+        fold_sign_accuracies = []
+
+        # ============================================================
+        # Stage 0: 全局统一 alpha 网格（所有 fold 共用）
+        # ============================================================
+        # 用全局数据生成搜索空间（仅用于定义网格，不参与 fold 内计算）
+        if self.standardize:
+            scaler_global = StandardScaler(copy=False)
+            X_std = scaler_global.fit_transform(X)
+        else:
+            X_std = X
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ridge_global = RidgeCV(alphas=self.lambda_ridge_list, cv=3,
+                                  scoring='neg_mean_squared_error')
+            ridge_global.fit(X_std, y)
+        beta_ridge_g = ridge_global.coef_
+
+        signs_g = np.sign(beta_ridge_g)
+        signs_g[signs_g == 0] = 1.0
+
+        # 使用 gamma=1.0 计算全局权重（简化版）
+        raw_weights_g = 1.0 / (np.abs(beta_ridge_g) + eps) ** 1.0
+        min_w_g = np.min(raw_weights_g)
+        w_norm_g = raw_weights_g / min_w_g
+        clip_max_g = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+        weights_g = np.clip(w_norm_g, 1.0, clip_max_g)
+
+        # 构造全局增广矩阵用于计算 alpha 网格
+        X_con_g, X_dis_g, X_aug_g = self._build_augmented_matrix(X_std, signs_g, weights_g)
+
+        alpha_max = np.max(np.abs(X_aug_g.T @ y)) / len(y)
+        alpha_min = alpha_max * self.alpha_min_ratio
+        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
 
         def _compute_single_gamma(gamma, X_tr, y_tr, X_va, y_va, signs_fold, beta_ridge_fold):
             """对单个 gamma 计算验证集 MSE 路径"""
@@ -251,12 +291,7 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
                 X_tr, signs_fold, weights_fold
             )
 
-            # alpha 搜索路径
-            alpha_max = np.max(np.abs(X_aug_tr.T @ y_tr)) / len(y_tr)
-            alpha_min = alpha_max * self.alpha_min_ratio
-            alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
-
-            # lasso_path 在增广矩阵上求解
+            # lasso_path 在增广矩阵上求解（使用全局统一 alphas）
             _, coefs_path, _ = lasso_path(
                 X_aug_tr, y_tr,
                 alphas=alphas,
@@ -282,7 +317,7 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
             mse_path = np.mean((y_va[:, np.newaxis] - preds_va) ** 2, axis=0)
             nselected = np.sum(beta_std_path != 0, axis=0)
 
-            return gamma, mse_path, nselected, alphas
+            return gamma, mse_path, nselected
 
         # 外层 Fold 顺序循环，内层 Gamma 并行
         for fold_idx, (train_idx, val_idx) in enumerate(splits):
@@ -305,6 +340,17 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
             signs_fold = np.sign(beta_ridge_fold)
             signs_fold[signs_fold == 0] = 1.0
 
+            # 统计 Ridge 先验在真信号上的符号准确率
+            sign_accuracy = None
+            if true_signals_idx is not None and len(true_signals_idx) > 0:
+                correct_signs = np.sum(
+                    np.sign(beta_ridge_fold[true_signals_idx]) == np.sign(beta_true[true_signals_idx])
+                )
+                sign_accuracy = correct_signs / len(true_signals_idx)
+                fold_sign_accuracies.append(sign_accuracy)
+                if self.verbose:
+                    print(f"[Fold {fold_idx + 1}] Ridge sign accuracy: {sign_accuracy * 100:.1f}% ({correct_signs}/{len(true_signals_idx)})")
+
             # 内层并行：gamma 级别
             # weights_fold 在 _compute_single_gamma 内部计算（依赖 gamma）
             gamma_results = Parallel(n_jobs=self.n_jobs, verbose=0)(
@@ -315,20 +361,25 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
                 for gamma in self.gamma_list
             )
 
-            for gamma, mse_path, nselected, alphas in gamma_results:
+            for gamma, mse_path, nselected in gamma_results:
                 gamma_idx = self.gamma_list.index(gamma)
                 error_matrix[gamma_idx, :, fold_idx] = mse_path
                 nselected_matrix[gamma_idx, :, fold_idx] = nselected
 
-        return error_matrix, nselected_matrix
+        return error_matrix, nselected_matrix, fold_sign_accuracies
 
-    def fit(self, X, y, sample_weight=None, cv_splits=None):
+    def fit(self, X, y, sample_weight=None, cv_splits=None, beta_true=None):
         """
         拟合 AP-AFL 模型
 
         Stage 1: K 折 Profile CV for γ
         Stage 2: Min-MSE Selection of γ
         Stage 3: Full Data Final Calibration with 1-SE Rule
+
+        Parameters
+        ----------
+        beta_true : np.ndarray, optional
+            真实系数向量。若提供，则计算 Ridge 先验在真信号上的符号准确率。
         """
         X, y = check_X_y(
             X, y,
@@ -347,10 +398,14 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
         if sample_weight is not None:
             sample_weight = np.asarray(sample_weight, dtype=_DTYPE)
 
+        # 计算真信号符号准确率（若 beta_true 提供）
+        if beta_true is not None:
+            beta_true = np.asarray(beta_true, dtype=_DTYPE)
+
         # ============================================================
         # Stage 1: K 折 Profile CV
         # ============================================================
-        error_matrix, nselected_matrix = self._stage1_profile_cv(X, y, cv_splits)
+        error_matrix, nselected_matrix, fold_sign_accuracies = self._stage1_profile_cv(X, y, cv_splits, beta_true)
 
         # ============================================================
         # Stage 2: Min-MSE Selection of γ
@@ -388,6 +443,7 @@ class APAFLRegressor(BaseEstimator, RegressorMixin):
         self.beta_ridge_ = ridge_final.coef_
         self.best_lambda_ridge_ = ridge_final.alpha_
 
+        # 存储 Ridge 符号向量（用于翻转）
         signs_final = np.sign(self.beta_ridge_)
         signs_final[signs_final == 0] = 1.0
         self.signs_ = signs_final

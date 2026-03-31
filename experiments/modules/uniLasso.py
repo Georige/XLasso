@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "unilasso"))
 
 from unilasso import fit_unilasso, cv_unilasso
+from unilasso.uni_lasso import cv_unilasso_with_splits
 
 from .base import BaseSparseSelector
 
@@ -115,7 +116,7 @@ class UniLasso(BaseSparseSelector):
             intercept_val = np.mean(y)
         self.intercept_ = float(np.asarray(intercept_val).ravel()[0])
         self.coef_ = self.coef_ / self._X_std
-        self.intercept_ = self.intercept_ + np.sum(self._X_mean * self.coef_)
+        self.intercept_ = self.intercept_ - np.sum(self._X_mean * self.coef_)
 
         self.is_fitted_ = True
         self.lmdas_ = lmdas if isinstance(lmdas, np.ndarray) else np.array([lmdas])
@@ -244,7 +245,7 @@ class UniLassoCV(BaseSparseSelector):
             intercept_val = np.mean(y)
         self.intercept_ = float(np.asarray(intercept_val).ravel()[0])
         self.coef_ = self.coef_ / self._X_std
-        self.intercept_ = self.intercept_ + np.sum(self._X_mean * self.coef_)
+        self.intercept_ = self.intercept_ - np.sum(self._X_mean * self.coef_)
 
         self.cv_results_ = {}
         if hasattr(self.result_, 'avg_losses'):
@@ -345,7 +346,7 @@ class UniLassoCV(BaseSparseSelector):
             intercept_val = np.mean(y_centered)
         self.intercept_ = float(np.asarray(intercept_val).ravel()[0])
         self.coef_ = self.coef_ / self._X_std
-        self.intercept_ = self.intercept_ + np.sum(self._X_mean * self.coef_)
+        self.intercept_ = self.intercept_ - np.sum(self._X_mean * self.coef_)
 
     def predict(self, X: npt.NDArray) -> np.ndarray:
         """Make predictions."""
@@ -362,3 +363,241 @@ class UniLassoCV(BaseSparseSelector):
         ss_res = np.sum((y - y_pred) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
         return 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+
+# =============================================================================
+# Wrapper classes for fit_unilasso and cv_unilasso to work with sweep.py config
+# =============================================================================
+
+class _UniLassoFunctionWrapper:
+    """Base wrapper for unilasso functions to work with sklearn-style API."""
+
+    func_name = None  # Override in subclass
+
+    def __init__(self, **params):
+        self._params = params
+        self.__dict__.update(params)
+        self.coef_: Optional[np.ndarray] = None
+        self.intercept_: float = 0.0
+        self.is_fitted_: bool = False
+        self.n_features_in_: Optional[int] = None
+
+    def get_params(self, deep: bool = True) -> dict:
+        return self._params.copy()
+
+    def set_params(self, **params) -> "_UniLassoFunctionWrapper":
+        self._params.update(params)
+        self.__dict__.update(params)
+        return self
+
+    def fit(self, X: npt.NDArray, y: npt.NDArray, **kwargs) -> "_UniLassoFunctionWrapper":
+        raise NotImplementedError("Subclass must implement fit")
+
+    def predict(self, X: npt.NDArray) -> np.ndarray:
+        if not self.is_fitted_:
+            raise ValueError("Model not fitted. Call fit() first.")
+        X = np.asarray(X, dtype=np.float64)
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        return X @ self.coef_ + self.intercept_
+
+
+class UniLassoFit(_UniLassoFunctionWrapper):
+    """
+    Wrapper for fit_unilasso function.
+    Works with sweep.py config: algo: fit_unilasso
+    """
+    func_name = "fit_unilasso"
+
+    def fit(self, X: npt.NDArray, y: npt.NDArray, **kwargs) -> "UniLassoFit":
+        """Fit using fit_unilasso."""
+        X = np.asarray(X, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        self.n_features_in_ = X.shape[1]
+
+        # Standardize X
+        self._X_mean = np.mean(X, axis=0)
+        self._X_std = np.std(X, axis=0)
+        self._X_std[self._X_std < 1e-10] = 1.0
+        X_scaled = (X - self._X_mean) / self._X_std
+
+        y_centered = y - np.mean(y)
+
+        # Build params for fit_unilasso
+        params = {k: v for k, v in self._params.items() if v is not None}
+        result = fit_unilasso(X=X_scaled, y=y_centered, **params)
+
+        # Extract coefficients
+        if hasattr(result, 'coefs'):
+            self.coef_ = result.coefs
+            if self.coef_.ndim > 1:
+                self.coef_ = self.coef_.ravel()
+        else:
+            self.coef_ = result.get('coefs', np.zeros(self.n_features_in_))
+
+        # Denormalize
+        self.coef_ = self.coef_ / self._X_std
+
+        # Intercept
+        intercept_val = getattr(result, 'intercept', None)
+        if intercept_val is None:
+            intercept_val = np.mean(y)
+        self.intercept_ = float(np.asarray(intercept_val).ravel()[0]) - np.sum(self._X_mean * self.coef_)
+
+        # Store prior signs from univariate regression (beta attribute)
+        self.prior_signs_: Optional[np.ndarray] = None
+        self.sign_accuracy_: Optional[float] = None
+        if hasattr(result, 'beta') and result.beta is not None:
+            self.prior_signs_ = np.sign(result.beta)
+            self.prior_signs_[self.prior_signs_ == 0] = 1.0
+
+        self.is_fitted_ = True
+        return self
+
+    def ridge_sign_accuracy(self, beta_true: np.ndarray) -> dict:
+        """
+        Compute sign accuracy: fraction of true signals where prior sign matches true sign.
+        For UniLasso, prior signs come from univariate regression (beta).
+        """
+        if self.prior_signs_ is None:
+            return {"sign_accuracy": None, "correct": 0, "total": 0}
+
+        true_signals_idx = np.where(beta_true != 0)[0]
+        if len(true_signals_idx) == 0:
+            return {"sign_accuracy": None, "correct": 0, "total": 0}
+
+        correct = np.sum(self.prior_signs_[true_signals_idx] == np.sign(beta_true[true_signals_idx]))
+        acc = correct / len(true_signals_idx)
+        self.sign_accuracy_ = acc
+        return {"sign_accuracy": acc, "correct": int(correct), "total": len(true_signals_idx)}
+
+
+class UniLassoCVFit(_UniLassoFunctionWrapper):
+    """
+    Wrapper for cv_unilasso function with 1-SE rule.
+    Works with sweep.py config: algo: cv_unilasso
+    """
+    func_name = "cv_unilasso"
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.use_1se_ = params.get('use_1se', True)
+        self.n_folds_ = params.get('n_folds', 5)
+        self.lmda_min_ratio_ = params.get('lmda_min_ratio', 1e-4)
+        self.family_ = params.get('family', 'gaussian')
+        self.seed_ = params.get('random_state', 42)
+
+    def fit(self, X: npt.NDArray, y: npt.NDArray, cv_splits=None, **kwargs) -> "UniLassoCVFit":
+        """Fit using cv_unilasso with optional 1-SE rule."""
+        X = np.asarray(X, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        self.n_features_in_ = X.shape[1]
+
+        # Standardize X
+        self._X_mean = np.mean(X, axis=0)
+        self._X_std = np.std(X, axis=0)
+        self._X_std[self._X_std < 1e-10] = 1.0
+        X_scaled = (X - self._X_mean) / self._X_std
+
+        y_centered = y - np.mean(y)
+
+        # Use external cv_splits if provided, otherwise let cv_unilasso generate internally
+        if cv_splits is not None:
+            cv_params = {
+                'cv_splits': cv_splits,
+                'family': self.family_,
+                'lmda_min_ratio': self.lmda_min_ratio_,
+                'seed': self.seed_,
+            }
+            cv_result = cv_unilasso_with_splits(X=X_scaled, y=y_centered, **cv_params)
+        else:
+            cv_params = {
+                'family': self.family_,
+                'n_folds': self.n_folds_,
+                'lmda_min_ratio': self.lmda_min_ratio_,
+                'seed': self.seed_,
+            }
+            cv_result = cv_unilasso(X=X_scaled, y=y_centered, **cv_params)
+
+        # Extract best lambda (1-SE or min loss)
+        if self.use_1se_ and hasattr(cv_result, 'cv_results_') and cv_result.cv_results_:
+            cv_res = cv_result.cv_results_
+            if 'lmdas' in cv_res and 'avg_losses' in cv_res:
+                lmdas = np.asarray(cv_res['lmdas'])
+                avg_losses = np.asarray(cv_res['avg_losses'])
+                std_losses = np.asarray(cv_res.get('std_losses', np.zeros_like(avg_losses)))
+                K = self.n_folds_
+                se_losses = std_losses / np.sqrt(K)
+
+                best_idx = np.argmin(avg_losses)
+                threshold = avg_losses[best_idx] + se_losses[best_idx]
+                candidates = np.where(avg_losses <= threshold)[0]
+                best_lmda = float(lmdas[best_idx])  # fallback to min loss
+        else:
+            best_lmda = getattr(cv_result, 'best_lmda_', cv_result.lmda_ if hasattr(cv_result, 'lmda_') else 0.01)
+
+        # Refit with best lambda
+        fit_result = fit_unilasso(
+            X=X_scaled, y=y_centered,
+            family=self.family_,
+            lmdas=[best_lmda],
+            n_lmdas=1,
+            lmda_min_ratio=1e-6,
+            verbose=False,
+        )
+
+        # Extract coefficients
+        if hasattr(fit_result, 'coefs'):
+            self.coef_ = fit_result.coefs
+            if self.coef_.ndim > 1:
+                self.coef_ = self.coef_.ravel()
+        else:
+            self.coef_ = fit_result.get('coefs', np.zeros(self.n_features_in_))
+
+        # Denormalize
+        self.coef_ = self.coef_ / self._X_std
+
+        # Intercept
+        intercept_val = getattr(fit_result, 'intercept', None)
+        if intercept_val is None:
+            intercept_val = np.mean(y)
+        self.intercept_ = float(np.asarray(intercept_val).ravel()[0]) - np.sum(self._X_mean * self.coef_)
+
+        # Store prior signs from univariate regression (via get_beta())
+        self.prior_signs_: Optional[np.ndarray] = None
+        self.sign_accuracy_: Optional[float] = None
+        try:
+            beta_prior = cv_result.get_beta()
+            if beta_prior is not None:
+                self.prior_signs_ = np.sign(beta_prior)
+                self.prior_signs_[self.prior_signs_ == 0] = 1.0
+        except Exception:
+            pass
+
+        self.best_lmda_ = best_lmda
+        self.is_fitted_ = True
+        return self
+
+    def score(self, X: npt.NDArray, y: npt.NDArray) -> float:
+        """Calculate R-squared score."""
+        y_pred = self.predict(X)
+        ss_res = np.sum((y - y_pred) ** 2)
+        ss_tot = np.sum((y - np.mean(y)) ** 2)
+        return 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    def ridge_sign_accuracy(self, beta_true: np.ndarray) -> dict:
+        """
+        Compute sign accuracy: fraction of true signals where prior sign matches true sign.
+        For UniLasso, prior signs come from univariate regression (beta).
+        """
+        if self.prior_signs_ is None:
+            return {"sign_accuracy": None, "correct": 0, "total": 0}
+
+        true_signals_idx = np.where(beta_true != 0)[0]
+        if len(true_signals_idx) == 0:
+            return {"sign_accuracy": None, "correct": 0, "total": 0}
+
+        correct = np.sum(self.prior_signs_[true_signals_idx] == np.sign(beta_true[true_signals_idx]))
+        acc = correct / len(true_signals_idx)
+        self.sign_accuracy_ = acc
+        return {"sign_accuracy": acc, "correct": int(correct), "total": len(true_signals_idx)}

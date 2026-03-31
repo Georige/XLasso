@@ -48,6 +48,10 @@ from experiments.modules import (
     APAFLClassifier,
     AdaptiveLasso,
     AdaptiveLassoCV,
+    PFLRegressor,
+    PFLRegressorCV,
+    PFLClassifier,
+    PFLClassifierCV,
     FusedLasso,
     FusedLassoCV,
     GroupLasso,
@@ -95,6 +99,11 @@ ALGO_REGISTRY = {
     # Other Lasso variants
     "adaptive_lasso": AdaptiveLasso,
     "adaptive_lasso_cv": AdaptiveLassoCV,
+    # PFL (Pure Flipped Lasso)
+    "pfl_regressor": PFLRegressor,
+    "pfl_regressor_cv": PFLRegressorCV,
+    "pfl_classifier": PFLClassifier,
+    "pfl_classifier_cv": PFLClassifierCV,
     "fused_lasso": FusedLasso,
     "fused_lasso_cv": FusedLassoCV,
     "group_lasso": GroupLasso,
@@ -407,9 +416,9 @@ def run_single_fold(
     algo_params = get_algo_params(algo_name, config)
     algo = algo_class(**algo_params)
 
-    # Fit
+    # Fit (pass beta_true for algorithms that compute sign accuracy)
     start_time = time.time()
-    algo.fit(X_train, y_train)
+    algo.fit(X_train, y_train, beta_true=beta_true)
     train_time = time.time() - start_time
 
     # Predict
@@ -425,6 +434,10 @@ def run_single_fold(
     )
     fold_metrics["fold"] = fold_idx
     fold_metrics["train_time"] = train_time
+
+    # Add sign accuracy if available (from AP-AFL and similar algorithms)
+    if hasattr(algo, 'sign_accuracy_') and algo.sign_accuracy_ is not None:
+        fold_metrics["sign_accuracy"] = algo.sign_accuracy_
 
     return fold_metrics, algo.coef_
 
