@@ -1139,6 +1139,48 @@ def get_benchmark_algo_params(algo_name, config):
             "eps": float(config.get("eps", 1e-5)),  # Ensure float (YAML may parse 1e-5 as string)
             "n_jobs": config.get("n_jobs", -1),
         })
+    elif algo_name == "adaptive_flipped_lasso_cv_en_classifier":
+        # Binary classifier wrapper of AFL-CV-EN
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 1.0, 5.0, 10.0]),
+            "l1_ratio_list": config.get("l1_ratio_list", [0.1, 0.5, 0.9]),
+            "gamma_list": config.get("gamma_list", [0.3, 0.5, 0.7, 1.0, 2.0, 3.0]),
+            "cv": config.get("cv_folds", 5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 2000),
+            "tol": config.get("tol", 0.0001),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 42),
+            "verbose": config.get("verbose", False),
+            "use_post_ols_debiasing": config.get("use_post_ols_debiasing", False),
+            "auto_tune_collinearity": config.get("auto_tune_collinearity", True),
+            "weight_clip_max": _parse_yaml_null(config.get("weight_clip_max", None)),
+            "eps": float(config.get("eps", 1e-5)),
+            "n_jobs": config.get("n_jobs", -1),
+        })
+    elif algo_name == "adaptive_flipped_lasso_cv_en_v2":
+        # V2 "主外主内" 策略：Stage2 用 1-SE 选 gamma，Stage3 用 Min-MSE 选 alpha
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 1.0, 5.0, 10.0]),
+            "l1_ratio_list": config.get("l1_ratio_list", [0.1, 0.5, 0.9]),
+            "gamma_list": config.get("gamma_list", [0.5, 1.0, 2.0]),
+            "cv": config.get("cv_folds", 5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 50),
+            "max_iter": config.get("max_iter", 2000),
+            "tol": config.get("tol", 0.0001),
+            "standardize": config.get("standardize", True),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 42),
+            "verbose": config.get("verbose", False),
+            "use_post_ols_debiasing": config.get("use_post_ols_debiasing", False),
+            "auto_tune_collinearity": config.get("auto_tune_collinearity", True),
+            "weight_clip_max": _parse_yaml_null(config.get("weight_clip_max", None)),
+            "eps": float(config.get("eps", 1e-5)),
+            "n_jobs": config.get("n_jobs", -1),
+        })
     elif algo_name == "adaptive_flipped_lasso_ebic":
         params.update({
             "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 0.5, 1.0, 2.0, 5.0, 10.0]),
@@ -1245,6 +1287,7 @@ def get_benchmark_algo_params(algo_name, config):
             "family": config.get("family", "gaussian"),
             "n_folds": config.get("cv_folds", 5),
             "use_1se": True,  # Enable 1-SE rule
+            "n_jobs": config.get("n_jobs", -1),
         })
     elif algo_name == "fused_lasso_cv":
         params.update({

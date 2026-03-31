@@ -568,90 +568,42 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
                 print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel)")
 
         # ============================================================
-        # 阶段二：选拔最优参数（1-SE 法则）
+        # Stage 2: Min-MSE 法则选 gamma（只选物理结构，不选 alpha）
         # ============================================================
         mean_error = np.mean(error_matrix, axis=2)  # (n_gamma, n_alpha)
-        std_error = np.std(error_matrix, axis=2) / np.sqrt(n_folds)  # SE of mean
         mean_nselected = np.mean(nselected_matrix, axis=2)  # (n_gamma, n_alpha)
 
-        # 1-SE 法则：选择最稀疏的模型，其 MSE 在 min(MSE) + 1*SE 范围内
-        min_mse = np.min(mean_error)
-        min_mse_idx = np.unravel_index(np.argmin(mean_error), mean_error.shape)
-        min_std = std_error[min_mse_idx]
-        threshold = min_mse + min_std
-
-        # 找到所有 MSE <= threshold 的候选组合
-        candidates_mask = mean_error <= threshold
-
-        if not np.any(candidates_mask):
-            # Fallback：如果没有候选（不应该发生），使用原始最小 MSE
-            if self.verbose:
-                print("[Stage 2] Warning: No candidates within 1-SE, using standard min-MSE")
-            best_gamma_idx, best_alpha_idx = np.unravel_index(
-                np.argmin(mean_error), mean_error.shape
-            )
-        else:
-            # 在候选中选择 n_selected 最少的（最稀疏的）
-            masked_nselected = np.where(candidates_mask, mean_nselected, np.inf)
-            best_flat_idx = np.argmin(masked_nselected)
-            best_gamma_idx, best_alpha_idx = np.unravel_index(best_flat_idx, mean_error.shape)
-
-        # For high-dimensional data (p >> n), prefer min MSE over sparse 1-SE
-        # This prevents the algorithm from selecting empty models due to unstable ridge coefficients
-        n_samples = X.shape[0]
-        n_features = X.shape[1]
-        if n_features > n_samples * 2:
-            if self.verbose:
-                print("[Stage 2] High-dimensional data detected, using min MSE instead of 1-SE")
-            best_gamma_idx, best_alpha_idx = np.unravel_index(
-                np.argmin(mean_error), mean_error.shape
-            )
-
+        # 对每个 gamma，取其全部 alpha 上的最小平均 MSE
+        # min_MSE_gamma[gamma_idx] = min_alpha(mean_error[gamma_idx, alpha])
+        min_MSE_gamma = np.min(mean_error, axis=1)  # (n_gamma,)
+        best_gamma_idx = int(np.argmin(min_MSE_gamma))
         self.best_gamma_ = self.gamma_list[best_gamma_idx]
-
-        # 重建该 gamma 对应的 alpha 路径（用于取 best_alpha）
-        if self.standardize:
-            X_for_stage2 = self.scaler_.fit_transform(X)
-        else:
-            X_for_stage2 = X
-        ridge_cv_tmp = RidgeCV(alphas=self.lambda_ridge_list, cv=3)
-        ridge_cv_tmp.fit(X_for_stage2, y)
-        beta_ridge_tmp = ridge_cv_tmp.coef_
-        signs_tmp = np.sign(beta_ridge_tmp)
-        signs_tmp[signs_tmp == 0] = 1.0
-        raw_weights_tmp = 1.0 / (np.abs(beta_ridge_tmp) + eps) ** self.best_gamma_
-        min_w = np.min(raw_weights_tmp)
-        weights_tmp = np.clip(raw_weights_tmp / min_w, 1.0, self.weight_clip_max if self.weight_clip_max is not None else float('inf'))
-        X_adaptive_tmp = (X_for_stage2 * signs_tmp) / weights_tmp
-        alpha_max_tmp = np.max(np.abs(X_adaptive_tmp.T @ y)) / len(y)
-        alpha_min_tmp = alpha_max_tmp * self.alpha_min_ratio
-        alphas_final = np.logspace(np.log10(alpha_min_tmp), np.log10(alpha_max_tmp), self.n_alpha)[::-1]
-        self.best_alpha_ = alphas_final[best_alpha_idx]
-
-        best_cv_mse = mean_error[best_gamma_idx, best_alpha_idx]
-        best_cv_nselected = mean_nselected[best_gamma_idx, best_alpha_idx]
+        best_cv_mse = float(min_MSE_gamma[best_gamma_idx])
+        best_cv_nselected = float(mean_nselected[best_gamma_idx].min())
         self.cv_score_ = -best_cv_mse
 
         if self.verbose:
-            print(f"\n[Stage 2] 1-SE Rule:")
-            print(f"  min_MSE={min_mse:.6f}, threshold={threshold:.6f}")
-            print(f"  n_candidates={np.sum(candidates_mask)}")
-            print(f"  selected: gamma={self.best_gamma_}, alpha={self.best_alpha_:.6f}")
-            print(f"  selected: CV_MSE={best_cv_mse:.6f}, n_selected≈{best_cv_nselected:.1f}")
+            print(f"\n[Stage 2] Min-MSE Gamma Selection:")
+            for gi, g in enumerate(self.gamma_list):
+                marker = " <-- best" if gi == best_gamma_idx else ""
+                print(f"  gamma={g:.2f}: min_MSE={float(min_MSE_gamma[gi]):.6f}{marker}")
+            print(f"  selected: gamma={self.best_gamma_}, CV_MSE={best_cv_mse:.6f}")
 
         # ============================================================
-        # 阶段三：全量数据终极拟合
+        # Stage 3: 全量数据终极拟合 + Fresh LassoCV + 1-SE 选 alpha
         # ============================================================
         if self.standardize:
             X_for_cv = self.scaler_.fit_transform(X)
         else:
             X_for_cv = X
 
+        # Step 1: 全量 RidgeCV → beta_ridge_final（最准的 Ridge 先验）
         ridge_final = RidgeCV(alphas=self.lambda_ridge_list, cv=self.cv)
         ridge_final.fit(X_for_cv, y)
         self.beta_ridge_ = ridge_final.coef_
         self.best_lambda_ridge_ = ridge_final.alpha_
 
+        # Step 2: 固定 best_gamma → weights
         signs_final = np.sign(self.beta_ridge_)
         signs_final[signs_final == 0] = 1.0
         self.signs_ = signs_final
@@ -660,8 +612,50 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         min_w = np.min(raw_weights_final)
         self.weights_ = np.clip(raw_weights_final / min_w, 1.0, self.weight_clip_max if self.weight_clip_max is not None else float('inf'))
 
+        # Step 3: 全量扭曲空间
         X_adaptive_final = (X_for_cv * signs_final) / self.weights_
 
+        # Step 4: Fresh LassoCV — 在新空间里重新丈量尺度
+        alpha_max = np.max(np.abs(X_adaptive_final.T @ y)) / len(y)
+        alpha_min = alpha_max * self.alpha_min_ratio
+        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
+        lasso_cv = LassoCV(
+            alphas=alphas,
+            cv=self.cv,
+            positive=True,
+            fit_intercept=self.fit_intercept,
+            max_iter=self.max_iter,
+            tol=self.tol,
+            random_state=self.random_state,
+        )
+        lasso_cv.fit(X_adaptive_final, y)
+
+        # Step 5: 1-SE 法则选 alpha
+        # mse_path_: shape (n_alphas, n_folds)
+        mse_path = lasso_cv.mse_path_
+        mean_mse = np.mean(mse_path, axis=1)
+        std_mse = np.std(mse_path, axis=1) / np.sqrt(self.cv)
+
+        min_idx = np.argmin(mean_mse)
+        min_mse_value = float(mean_mse[min_idx])
+        std_at_min = float(std_mse[min_idx])
+        threshold = min_mse_value + std_at_min
+
+        candidates_mask = mean_mse <= threshold
+        if np.any(candidates_mask):
+            # 在候选中选 alpha 最大（最稀疏）的
+            candidate_alphas = alphas[candidates_mask]
+            self.best_alpha_ = float(np.max(candidate_alphas))
+        else:
+            self.best_alpha_ = float(lasso_cv.alpha_)
+
+        if self.verbose:
+            print(f"[Stage 3] 1-SE Alpha Selection:")
+            print(f"  min_mse={min_mse_value:.6f}, threshold={threshold:.6f}")
+            print(f"  selected: alpha={self.best_alpha_:.6f}")
+
+        # Step 6: 最终 Lasso（用 best_alpha）
         lasso_final = Lasso(
             alpha=self.best_alpha_,
             positive=True,
@@ -675,19 +669,23 @@ class AdaptiveFlippedLassoCV(BaseAdaptiveFlippedLasso, RegressorMixin):
         coef_final = (lasso_final.coef_ / self.weights_) * signs_final
 
         # Post-selection OLS debiasing: fit OLS on selected features to reduce MSE
+        # selected_mask comes from lasso_final.coef_ (adaptive space), so we must
+        # select from X_adaptive_final (not X_for_cv) to maintain index consistency
         intercept_ols = None
         if self.use_post_ols_debiasing:
             selected_mask = lasso_final.coef_ != 0
             n_selected = np.sum(selected_mask)
 
-            if n_selected > 0 and n_selected < X.shape[1]:
-                # Fit OLS on selected features only (un-penalized)
-                X_selected = X_for_cv[:, selected_mask]
+            if n_selected > 0 and n_selected < X_adaptive_final.shape[1]:
+                X_selected = X_adaptive_final[:, selected_mask]
                 ols = LinearRegression(fit_intercept=self.fit_intercept)
                 ols.fit(X_selected, y)
-                # Create full coef vector with OLS coefficients at selected indices
-                coef_debiased = np.zeros(X.shape[1])
+                # OLS coefficients are in adaptive space → inverse transform to standardized/original space
+                coef_debiased = np.zeros(X_adaptive_final.shape[1])
                 coef_debiased[selected_mask] = ols.coef_
+                coef_debiased = (coef_debiased / self.weights_) * signs_final
+                if self.standardize:
+                    coef_debiased = coef_debiased / self.scaler_.scale_
                 coef_final = coef_debiased
                 if self.fit_intercept:
                     intercept_ols = ols.intercept_
@@ -1976,18 +1974,13 @@ class AdaptiveFlippedLassoCV_EN(BaseAdaptiveFlippedLasso, RegressorMixin):
 
             return fold_idx, fold_errors, fold_nselected
 
-        # 并行执行所有折
-        parallel_results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(_compute_single_fold_errors)(fold_idx, train_idx, val_idx)
-            for fold_idx, (train_idx, val_idx) in enumerate(splits)
-        )
-
-        # 收集结果
-        for fold_idx, fold_errors, fold_nselected in parallel_results:
+        # 外层 fold 串行执行（避免嵌套并行死锁），内层 gamma 已并行
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
+            fold_errors, fold_nselected = _compute_single_fold_errors(fold_idx, train_idx, val_idx)
             error_matrix[:, :, fold_idx] = fold_errors
             nselected_matrix[:, :, fold_idx] = fold_nselected
             if self.verbose:
-                print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel)")
+                print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel gamma)")
 
         # ============================================================
         # Stage 2: Min-MSE 法则选出 best_gamma（绝对隔离）
@@ -2348,16 +2341,13 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
 
             return fold_idx, fold_errors, fold_nselected
 
-        parallel_results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(_compute_single_fold_errors)(fold_idx, train_idx, val_idx)
-            for fold_idx, (train_idx, val_idx) in enumerate(splits)
-        )
-
-        for fold_idx, fold_errors, fold_nselected in parallel_results:
+        # 外层 fold 串行执行（避免嵌套并行死锁），内层 gamma 已并行
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
+            fold_errors, fold_nselected = _compute_single_fold_errors(fold_idx, train_idx, val_idx)
             error_matrix[:, :, fold_idx] = fold_errors
             nselected_matrix[:, :, fold_idx] = fold_nselected
             if self.verbose:
-                print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel)")
+                print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel gamma)")
 
         # ============================================================
         # Stage 2: 1-SE 法则选 best_gamma
@@ -2493,3 +2483,738 @@ class AdaptiveFlippedLassoCV_EN_V2(BaseAdaptiveFlippedLasso, RegressorMixin):
         from sklearn.metrics import mean_squared_error
         y_pred = self.predict(X)
         return -mean_squared_error(y, y_pred, sample_weight=sample_weight)
+
+class ConfidenceCalibratedAFL(BaseAdaptiveFlippedLasso, RegressorMixin):
+    """
+    CC-AFL — Data-Driven Confidence-Calibrated Adaptive Flipped Lasso
+    ================================================================
+
+    一种融合了 MAD 自适应阈值、变量增广（影分身）与 1-SE 法则的终极 AFL 形态。
+
+    算法流程：
+    Stage 1: 严格隔离的折内结构探路 (Profile CV for γ)
+        - K 折划分，每折内部独立
+        - 折内 RidgeCV → β_prior
+        - MAD 自适应阈值 τ = c · median(|β_prior_j|)
+        - 划分自信集 M_conf 与摇摆集 M_unc
+        - 对每个 γ：构造增广矩阵 + 非负 Lasso 路径 + 验证集 MSE
+
+    Stage 2: Min-MSE 法则选 γ* (物理拓扑结构定调)
+        - 聚合 K 折平均最小 MSE
+        - 选出平均误差最小的 γ
+
+    Stage 3: 全量空间终极校准 (1-SE Rule)
+        - 全量 RidgeCV → 全局先验 β_final
+        - MAD 阈值划分全局自信/摇摆集
+        - 固定 γ* 构造全量增广矩阵
+        - LassoCV(cv=K, positive=True) + 1-SE 法则选 α
+        - 逆向缝合 → 物理空间系数 β_final
+
+    核心创新：
+    1. MAD 动态截断：优雅解决"符号崩塌"问题
+    2. 变量增广技术：对摇摆集变量创建正负两个版本，保留双向搜索自由度
+    3. 非负优化器约束：严格恪守底层运算规律，唤醒 Oracle Property
+
+    参数
+    ----
+    lambda_ridge_list : tuple, default=(0.1, 1.0, 10.0, 100.0)
+        Ridge 正则化强度候选网格
+    gamma_list : tuple, default=(0.5, 1.0, 2.0)
+        权重衰减指数候选网格
+    cv : int, default=5
+        交叉验证折数
+    mad_c : float, default=0.5
+        MAD 松弛系数 (τ = c · MAD)
+    alpha_min_ratio : float, default=1e-4
+        自动搜索时 alpha 的最小值比例
+    n_alpha : int, default=100
+        自动搜索时的 alpha 候选数量
+    max_iter : int, default=1000
+        Lasso 最大迭代次数
+    tol : float, default=1e-4
+        Lasso 收敛容忍度
+    standardize : bool, default=False
+        是否标准化特征
+    fit_intercept : bool, default=True
+        是否拟合截距
+    random_state : int, default=2026
+        随机种子
+    verbose : bool, default=False
+        是否输出详细信息
+    weight_clip_max : float, default=100.0
+        权重截断上限
+    eps : float, default=1e-5
+        防止除零的小常数
+    n_jobs : int, default=-1
+        并行任务数 (-1 = 全部核心)
+    """
+
+    def __init__(
+        self,
+        lambda_ridge_list: tuple = (0.1, 1.0, 10.0, 100.0),
+        gamma_list: tuple = (0.5, 1.0, 2.0),
+        cv: int = 5,
+        mad_c: float = 0.5,
+        alpha_min_ratio: float = 1e-4,
+        n_alpha: int = 100,
+        max_iter: int = 1000,
+        tol: float = 1e-4,
+        standardize: bool = False,
+        fit_intercept: bool = True,
+        random_state: int = 2026,
+        verbose: bool = False,
+        weight_clip_max: float = 100.0,
+        eps: float = 1e-5,
+        n_jobs: int = -1,
+    ):
+        self.lambda_ridge_list = lambda_ridge_list
+        self.gamma_list = gamma_list
+        self.cv = cv
+        self.mad_c = mad_c
+        self.alpha_min_ratio = alpha_min_ratio
+        self.n_alpha = n_alpha
+        self.max_iter = max_iter
+        self.tol = tol
+        self.standardize = standardize
+        self.fit_intercept = fit_intercept
+        self.random_state = random_state
+        self.verbose = verbose
+        self.weight_clip_max = None if (weight_clip_max is None or weight_clip_max == 'null') else weight_clip_max
+        self.eps = eps
+        self.n_jobs = n_jobs
+
+        self._init_fitted_attributes()
+
+    def get_params(self, deep: bool = True) -> dict:
+        return {
+            'lambda_ridge_list': self.lambda_ridge_list,
+            'gamma_list': self.gamma_list,
+            'cv': self.cv,
+            'mad_c': self.mad_c,
+            'alpha_min_ratio': self.alpha_min_ratio,
+            'n_alpha': self.n_alpha,
+            'max_iter': self.max_iter,
+            'tol': self.tol,
+            'standardize': self.standardize,
+            'fit_intercept': self.fit_intercept,
+            'random_state': self.random_state,
+            'verbose': self.verbose,
+            'weight_clip_max': self.weight_clip_max,
+            'eps': self.eps,
+            'n_jobs': self.n_jobs,
+        }
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            if key in self.get_params():
+                setattr(self, key, value)
+            else:
+                raise ValueError(f"Invalid parameter '{key}' for estimator {self.__class__.__name__}")
+        return self
+
+    def _compute_mad_threshold(self, beta: np.ndarray) -> float:
+        """
+        计算 MAD 自适应阈值
+
+        τ = c · median(|β_j| for β_j ≠ 0)
+
+        Parameters
+        ----------
+        beta : np.ndarray
+            Ridge 系数向量 (p,)
+
+        Returns
+        -------
+        float
+            MAD 阈值 τ
+        """
+        nonzero_vals = np.abs(beta[beta != 0])
+        if len(nonzero_vals) == 0:
+            return 0.0
+        median_val = np.median(nonzero_vals)
+        return self.mad_c * median_val
+
+    def _compute_adaptive_weights(self, beta_ridge: np.ndarray, gamma: float) -> np.ndarray:
+        """
+        计算 Min-Anchored 归一化自适应权重
+
+        w_j = min((|β_j| + ε)^(-γ) / min_m((|β_m| + ε)^(-γ)), w_max)
+
+        Parameters
+        ----------
+        beta_ridge : np.ndarray
+            Ridge 系数向量 (p,)
+        gamma : float
+            权重衰减指数
+
+        Returns
+        -------
+        np.ndarray
+            归一化权重向量 (p,)
+        """
+        eps = self.eps
+        raw_weights = 1.0 / (np.abs(beta_ridge) + eps) ** gamma
+        min_w = np.min(raw_weights)
+        w_normalized = raw_weights / min_w
+        clip_max = self.weight_clip_max if self.weight_clip_max is not None else float('inf')
+        weights = np.clip(w_normalized, 1.0, clip_max)
+        return weights
+
+    def _build_augmented_matrix(
+        self,
+        X: np.ndarray,
+        beta_ridge: np.ndarray,
+        weights: np.ndarray,
+        gamma: float,
+    ) -> tuple:
+        """
+        向量化影分身增广矩阵重构 (Variable Splitting)
+
+        对于自信集变量：X_conf = X_j · sign(β_j) / w_j
+        对于摇摆集变量：X_unc^+ = X_j / w_j, X_unc^- = -X_j / w_j
+
+        Parameters
+        ----------
+        X : np.ndarray
+            标准化后的特征矩阵 (n, p)
+        beta_ridge : np.ndarray
+            Ridge 系数向量 (p,)
+        weights : np.ndarray
+            自适应权重 (p,)
+
+        Returns
+        -------
+        tuple
+            (增广矩阵 X_aug, 自信索引数组, 摇摆索引数组,
+             自信起始位置, 摇摆变量起始位置, n_conf, n_unc)
+        """
+        signs = np.sign(beta_ridge)
+        signs[signs == 0] = 1.0
+
+        # MAD 阈值划分
+        tau = self._compute_mad_threshold(beta_ridge)
+        conf_mask = np.abs(beta_ridge) >= tau
+        unc_mask = ~conf_mask
+
+        n_conf = np.sum(conf_mask)
+        n_unc = np.sum(unc_mask)
+        n_aug = n_conf + 2 * n_unc
+
+        if self.verbose:
+            print(f"  [Augment] MAD τ={tau:.4f}, conf={n_conf}, unc={n_unc}")
+
+        # 预分配增广矩阵（向量化操作）
+        X_aug = np.zeros((X.shape[0], n_aug), dtype=X.dtype)
+
+        # 自信集：位置 [0, n_conf)
+        conf_indices = np.where(conf_mask)[0]
+        if n_conf > 0:
+            # 批量向量化：X_conf = X[:, conf_indices] * signs[conf_indices] / weights[conf_indices]
+            X_aug[:, :n_conf] = (
+                X[:, conf_indices] * signs[conf_indices] / weights[conf_indices]
+            )
+
+        # 摇摆集：位置 [n_conf, n_conf + 2*n_unc)，成对存储（阳面, 阴面）
+        unc_indices = np.where(unc_mask)[0]
+        if n_unc > 0:
+            # 阳面：+X / w
+            X_aug[:, n_conf:n_conf + n_unc] = (
+                X[:, unc_indices] / weights[unc_indices]
+            )
+            # 阴面：-X / w
+            X_aug[:, n_conf + n_unc:n_conf + 2 * n_unc] = (
+                -X[:, unc_indices] / weights[unc_indices]
+            )
+
+        return X_aug, conf_indices, unc_indices, 0, n_conf, n_conf, n_unc
+
+    def _reconstruct_coefficients(
+        self,
+        coef_aug: np.ndarray,
+        conf_indices: np.ndarray,
+        unc_indices: np.ndarray,
+        conf_start: int,
+        unc_start: int,
+        n_conf: int,
+        n_unc: int,
+        signs: np.ndarray,
+        weights: np.ndarray,
+        n_features: int,
+    ) -> np.ndarray:
+        """
+        向量化系数还原
+
+        数学推导：
+        - 前向变换：X_aug = X / w（除以权重）
+        - Lasso 求解：y = X_aug @ θ
+        - 逆变换：y = (X / w) @ θ = X @ (θ / w)
+
+        因此还原系数必须除以权重：
+        - 自信变量：β_j = θ_j * sign(β_j) / w_j
+        - 摇摆变量：β_j = (θ_unc⁺ - θ_unc⁻) / w_j
+
+        Parameters
+        ----------
+        coef_aug : np.ndarray
+            增广空间系数向量 (n_conf + 2*n_unc,)
+        conf_indices : np.ndarray
+            自信集原始特征索引
+        unc_indices : np.ndarray
+            摇摆集原始特征索引
+        conf_start : int
+            自信集在增广向量中的起始位置
+        unc_start : int
+            摇摆集在增广向量中的起始位置
+        n_conf : int
+            自信集变量数
+        n_unc : int
+            摇摆集变量数
+        signs : np.ndarray
+            Ridge 系数符号向量 (p,)
+        weights : np.ndarray
+            自适应权重 (p,)
+        n_features : int
+            原始特征数 p
+
+        Returns
+        -------
+        np.ndarray
+            还原后的 p 维系数向量
+        """
+        coef_std = np.zeros(n_features, dtype=coef_aug.dtype)
+
+        # 自信变量：β_j = θ_j * sign(β_j) / w_j
+        if n_conf > 0:
+            conf_coefs = coef_aug[conf_start:conf_start + n_conf]
+            coef_std[conf_indices] = conf_coefs * signs[conf_indices] / weights[conf_indices]
+
+        # 摇摆变量：β_j = (θ_unc⁺ - θ_unc⁻) / w_j
+        if n_unc > 0:
+            unc_plus = coef_aug[unc_start:unc_start + n_unc]
+            unc_minus = coef_aug[unc_start + n_unc:unc_start + 2 * n_unc]
+            coef_std[unc_indices] = (unc_plus - unc_minus) / weights[unc_indices]
+
+        return coef_std
+
+    def _transform_to_augmented(
+        self,
+        X: np.ndarray,
+        beta_ridge: np.ndarray,
+        weights: np.ndarray,
+        gamma: float,
+    ) -> np.ndarray:
+        """向量化将原始矩阵变换为增广空间"""
+        signs = np.sign(beta_ridge)
+        signs[signs == 0] = 1.0
+        tau = self._compute_mad_threshold(beta_ridge)
+
+        conf_mask = np.abs(beta_ridge) >= tau
+        unc_mask = ~conf_mask
+
+        n_conf = np.sum(conf_mask)
+        n_unc = np.sum(unc_mask)
+        n_aug = n_conf + 2 * n_unc
+
+        X_aug = np.zeros((X.shape[0], n_aug), dtype=X.dtype)
+
+        # 自信集
+        conf_indices = np.where(conf_mask)[0]
+        if n_conf > 0:
+            X_aug[:, :n_conf] = X[:, conf_indices] * signs[conf_indices] / weights[conf_indices]
+
+        # 摇摆集（阳面和阴面）
+        unc_indices = np.where(unc_mask)[0]
+        if n_unc > 0:
+            X_aug[:, n_conf:n_conf + n_unc] = X[:, unc_indices] / weights[unc_indices]
+            X_aug[:, n_conf + n_unc:n_conf + 2 * n_unc] = -X[:, unc_indices] / weights[unc_indices]
+
+        return X_aug
+
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
+        """
+        拟合 CC-AFL 模型
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Training data (n, p)
+        y : np.ndarray
+            Target values (n,)
+        sample_weight : np.ndarray, optional
+            Sample weights
+        cv_splits : list of tuples, optional
+            Pre-generated CV splits for fair comparison
+        """
+        from sklearn.model_selection import KFold
+        from sklearn.metrics import mean_squared_error
+
+        X, y = check_X_y(
+            X, y,
+            accept_sparse=['csr', 'csc'],
+            dtype=_DTYPE,
+            copy=_COPY_WHEN_POSSIBLE,
+            ensure_2d=True,
+            ensure_min_samples=2,
+            ensure_min_features=2
+        )
+        self.n_features_in_ = X.shape[1]
+        n = X.shape[0]
+        p = self.n_features_in_
+
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight, dtype=_DTYPE)
+
+        eps = self.eps
+        gamma_list = [float(x) for x in self.gamma_list]
+        n_gamma = len(gamma_list)
+
+        # ============================================================
+        # Stage 1: 严格隔离的折内结构探路
+        # ============================================================
+        if cv_splits is not None:
+            n_folds = len(cv_splits)
+            splits = cv_splits
+            if self.verbose:
+                print(f"[CC-AFL] Using provided {n_folds}-fold CV splits")
+        else:
+            n_folds = self.cv
+            kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
+            splits = list(kfold.split(X))
+
+        error_matrix = np.full((n_gamma, self.n_alpha, n_folds), np.inf)
+        nselected_matrix = np.zeros((n_gamma, self.n_alpha, n_folds))
+
+        # 外层 fold 串行执行（避免嵌套并行死锁）
+        # 内层 gamma 并行执行
+        n_jobs = self.n_jobs if self.n_jobs is not None else -1
+
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
+            X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
+            y_tr, y_va = y[train_idx], y[val_idx]
+
+            if self.standardize:
+                scaler_fold = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
+                X_tr = scaler_fold.fit_transform(X_tr_raw)
+                X_va = scaler_fold.transform(X_va_raw)
+            else:
+                X_tr, X_va = X_tr_raw.copy(), X_va_raw.copy()
+
+            # 折内 RidgeCV
+            ridge_cv = RidgeCV(alphas=self.lambda_ridge_list, cv=3)
+            ridge_cv.fit(X_tr, y_tr)
+            beta_ridge_fold = ridge_cv.coef_
+
+            fold_errors = np.zeros((n_gamma, self.n_alpha))
+            fold_nselected = np.zeros((n_gamma, self.n_alpha))
+
+            # 内层 gamma 并行
+            def _eval_gamma(gamma_idx, gamma):
+                weights = self._compute_adaptive_weights(beta_ridge_fold, gamma)
+
+                # 构造增广矩阵（训练集）
+                X_aug_tr, conf_idx, unc_idx, _, _, n_conf, n_unc = self._build_augmented_matrix(
+                    X_tr, beta_ridge_fold, weights, gamma
+                )
+
+                # 预计算验证集的增广矩阵
+                X_aug_va = self._transform_to_augmented(X_va, beta_ridge_fold, weights, gamma)
+
+                # alpha 路径
+                alpha_max = np.max(np.abs(X_aug_tr.T @ y_tr)) / len(y_tr)
+                alpha_min = alpha_max * self.alpha_min_ratio
+                alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
+                # lasso_path
+                _, coefs_path, _ = lasso_path(
+                    X_aug_tr, y_tr,
+                    alphas=alphas,
+                    positive=True,
+                    max_iter=self.max_iter,
+                    tol=self.tol,
+                )
+
+                # 验证集预测（直接用增广矩阵）
+                if X_aug_va.shape[1] > 0:
+                    preds = X_aug_va @ coefs_path
+                else:
+                    preds = np.zeros((len(y_va), len(alphas)))
+
+                mse_path = np.mean((y_va[:, np.newaxis] - preds) ** 2, axis=0)
+                nselected_path = np.sum(coefs_path != 0, axis=0)
+
+                return gamma_idx, mse_path, nselected_path
+
+            gamma_results = Parallel(n_jobs=n_jobs, verbose=0)(
+                delayed(_eval_gamma)(gamma_idx, gamma)
+                for gamma_idx, gamma in enumerate(gamma_list)
+            )
+
+            for gamma_idx, mse_path, nselected_path in gamma_results:
+                fold_errors[gamma_idx, :] = mse_path
+                fold_nselected[gamma_idx, :] = nselected_path
+
+            error_matrix[:, :, fold_idx] = fold_errors
+            nselected_matrix[:, :, fold_idx] = fold_nselected
+            if self.verbose:
+                print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel gamma)")
+
+        # ============================================================
+        # Stage 2: Min-MSE 法则选 γ*
+        # ============================================================
+        mean_error = np.mean(error_matrix, axis=2)  # (n_gamma, n_alpha)
+        mean_nselected = np.mean(nselected_matrix, axis=2)
+
+        # 每个 gamma 取其所有 alpha 上的最小平均 MSE
+        min_MSE_gamma = np.min(mean_error, axis=1)  # (n_gamma,)
+        best_gamma_idx = int(np.argmin(min_MSE_gamma))
+        self.best_gamma_ = gamma_list[best_gamma_idx]
+        best_cv_mse = float(min_MSE_gamma[best_gamma_idx])
+        self.cv_score_ = -best_cv_mse
+
+        if self.verbose:
+            print(f"\n[Stage 2] Min-MSE Gamma Selection:")
+            for gi, g in enumerate(gamma_list):
+                marker = " <-- best" if gi == best_gamma_idx else ""
+                print(f"  gamma={g:.2f}: min_MSE={float(min_MSE_gamma[gi]):.6f}{marker}")
+            print(f"  selected: gamma={self.best_gamma_}, CV_MSE={best_cv_mse:.6f}")
+
+        # ============================================================
+        # Stage 3: 全量空间终极校准
+        # ============================================================
+        if self.standardize:
+            self.scaler_ = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
+            X_std = self.scaler_.fit_transform(X)
+        else:
+            self.scaler_ = None
+            X_std = X.copy()
+
+        # Step 1: 全量 RidgeCV
+        ridge_final = RidgeCV(alphas=self.lambda_ridge_list, cv=self.cv)
+        ridge_final.fit(X_std, y)
+        self.beta_ridge_ = ridge_final.coef_
+        self.best_lambda_ridge_ = ridge_final.alpha_
+
+        if self.verbose:
+            print(f"\n[Stage 3] Full-data Ridge: lambda_ridge={self.best_lambda_ridge_:.4f}")
+
+        # Step 2: MAD 阈值划分
+        tau_final = self._compute_mad_threshold(self.beta_ridge_)
+        conf_mask_final = np.abs(self.beta_ridge_) >= tau_final
+        n_conf = np.sum(conf_mask_final)
+        n_unc = np.sum(~conf_mask_final)
+
+        if self.verbose:
+            print(f"[Stage 3] MAD tau={tau_final:.4f}, conf={n_conf}, unc={n_unc}")
+
+        # Step 3: 固定 gamma* 计算权重 + 增广矩阵
+        signs_final = np.sign(self.beta_ridge_)
+        signs_final[signs_final == 0] = 1.0
+        self.signs_ = signs_final
+
+        weights_final = self._compute_adaptive_weights(self.beta_ridge_, self.best_gamma_)
+        self.weights_ = weights_final
+
+        X_aug_final, conf_idx_final, unc_idx_final, conf_start, unc_start, n_conf_final, n_unc_final = self._build_augmented_matrix(
+            X_std, self.beta_ridge_, weights_final, self.best_gamma_
+        )
+
+        if self.verbose:
+            print(f"[Stage 3] Augmented matrix: {X_aug_final.shape}")
+
+        # Step 4: LassoCV + 1-SE 法则
+        alpha_max = np.max(np.abs(X_aug_final.T @ y)) / len(y)
+        alpha_min = alpha_max * self.alpha_min_ratio
+        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+
+        lasso_cv = LassoCV(
+            alphas=alphas,
+            cv=self.cv,
+            positive=True,
+            fit_intercept=self.fit_intercept,
+            max_iter=self.max_iter,
+            tol=self.tol,
+            random_state=self.random_state,
+        )
+        lasso_cv.fit(X_aug_final, y)
+
+        # 1-SE 法则
+        mse_path = lasso_cv.mse_path_
+        mean_mse = np.mean(mse_path, axis=1)
+        std_mse = np.std(mse_path, axis=1) / np.sqrt(self.cv)
+
+        min_idx = np.argmin(mean_mse)
+        min_mse_value = float(mean_mse[min_idx])
+        std_at_min = float(std_mse[min_idx])
+        threshold = min_mse_value + std_at_min
+
+        candidates_mask = mean_mse <= threshold
+        if np.any(candidates_mask):
+            candidate_alphas = alphas[candidates_mask]
+            self.best_alpha_ = float(np.max(candidate_alphas))
+        else:
+            self.best_alpha_ = float(lasso_cv.alpha_)
+
+        if self.verbose:
+            print(f"[Stage 3] 1-SE Alpha: alpha={self.best_alpha_:.6f}, "
+                  f"min_mse={min_mse_value:.6f}, threshold={threshold:.6f}")
+
+        # Step 5: 最终 Lasso
+        lasso_final = Lasso(
+            alpha=self.best_alpha_,
+            positive=True,
+            fit_intercept=self.fit_intercept,
+            max_iter=self.max_iter,
+            tol=self.tol,
+            random_state=self.random_state,
+        )
+        lasso_final.fit(X_aug_final, y)
+
+        # Step 6: 逆向缝合（必须除以权重还原到物理空间）
+        coef_aug_final = lasso_final.coef_
+        coef_std = self._reconstruct_coefficients(
+            coef_aug_final, conf_idx_final, unc_idx_final,
+            conf_start, unc_start, n_conf_final, n_unc_final,
+            signs_final, weights_final, p
+        )
+
+        # 逆标准化
+        if self.standardize:
+            self.coef_ = coef_std / self.scaler_.scale_
+            if self.fit_intercept:
+                self.intercept_ = np.mean(y) - np.sum(self.coef_ * self.scaler_.mean_)
+        else:
+            self.coef_ = coef_std
+            if self.fit_intercept:
+                self.intercept_ = lasso_final.intercept_
+
+        if self.verbose:
+            n_nonzero = np.sum(self.coef_ != 0)
+            print(f"\n[Stage 3] Final: gamma={self.best_gamma_}, "
+                  f"alpha={self.best_alpha_:.6f}, n_nonzero={n_nonzero}")
+
+        self.is_fitted_ = True
+        return self
+
+    def score(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None) -> float:
+        """默认负 MSE 评分"""
+        from sklearn.metrics import mean_squared_error
+        y_pred = self.predict(X)
+        return -mean_squared_error(y, y_pred, sample_weight=sample_weight)
+
+
+class ConfidenceCalibratedAFLClassifier(BaseAdaptiveFlippedLasso, ClassifierMixin):
+    """
+    CC-AFL 二分类器
+
+    使用 ConfidenceCalibratedAFL 作为回归核心，通过 sigmoid 链接函数实现二分类。
+    """
+
+    def __init__(self, **kwargs):
+        # Extract CC-AFL specific params
+        self.lambda_ridge_list = kwargs.pop('lambda_ridge_list', (0.1, 1.0, 10.0, 100.0))
+        self.gamma_list = kwargs.pop('gamma_list', (0.5, 1.0, 2.0))
+        self.cv = kwargs.pop('cv', 5)
+        self.mad_c = kwargs.pop('mad_c', 0.5)
+        self.alpha_min_ratio = kwargs.pop('alpha_min_ratio', 1e-4)
+        self.n_alpha = kwargs.pop('n_alpha', 100)
+        self.max_iter = kwargs.pop('max_iter', 1000)
+        self.tol = kwargs.pop('tol', 1e-4)
+        self.standardize = kwargs.pop('standardize', False)
+        self.fit_intercept = kwargs.pop('fit_intercept', True)
+        self.random_state = kwargs.pop('random_state', 2026)
+        self.verbose = kwargs.pop('verbose', False)
+        self.weight_clip_max = kwargs.pop('weight_clip_max', 100.0)
+        self.eps = kwargs.pop('eps', 1e-5)
+        self.n_jobs = kwargs.pop('n_jobs', -1)
+
+        self._init_fitted_attributes()
+        self.classes_ = None
+        self.task_type_ = 'classification'
+
+    def get_params(self, deep: bool = True) -> dict:
+        return {
+            'lambda_ridge_list': self.lambda_ridge_list,
+            'gamma_list': self.gamma_list,
+            'cv': self.cv,
+            'mad_c': self.mad_c,
+            'alpha_min_ratio': self.alpha_min_ratio,
+            'n_alpha': self.n_alpha,
+            'max_iter': self.max_iter,
+            'tol': self.tol,
+            'standardize': self.standardize,
+            'fit_intercept': self.fit_intercept,
+            'random_state': self.random_state,
+            'verbose': self.verbose,
+            'weight_clip_max': self.weight_clip_max,
+            'eps': self.eps,
+            'n_jobs': self.n_jobs,
+        }
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            if key in self.get_params():
+                setattr(self, key, value)
+        return self
+
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
+        """拟合 CC-AFL 分类器"""
+        from sklearn.utils.validation import check_X_y
+
+        X, y = check_X_y(X, y, accept_sparse=['csr', 'csc'], ensure_2d=True)
+        self.n_features_in_ = X.shape[1]
+        self.classes_ = np.unique(y)
+
+        if len(self.classes_) != 2:
+            raise ValueError("ConfidenceCalibratedAFLClassifier only supports binary classification")
+
+        # 转换为连续响应
+        y_continuous = (y == self.classes_[1]).astype(np.float64)
+
+        # 使用 CC-AFL 回归器
+        ccaf = ConfidenceCalibratedAFL(
+            lambda_ridge_list=self.lambda_ridge_list,
+            gamma_list=self.gamma_list,
+            cv=self.cv,
+            mad_c=self.mad_c,
+            alpha_min_ratio=self.alpha_min_ratio,
+            n_alpha=self.n_alpha,
+            max_iter=self.max_iter,
+            tol=self.tol,
+            standardize=self.standardize,
+            fit_intercept=self.fit_intercept,
+            random_state=self.random_state,
+            verbose=self.verbose,
+            weight_clip_max=self.weight_clip_max,
+            eps=self.eps,
+            n_jobs=self.n_jobs,
+        )
+        ccaf.fit(X, y_continuous, sample_weight, cv_splits)
+
+        # 复制属性
+        self.coef_ = ccaf.coef_
+        self.intercept_ = ccaf.intercept_
+        self.scaler_ = ccaf.scaler_
+        self.is_fitted_ = True
+        self.best_gamma_ = ccaf.best_gamma_
+        self.best_alpha_ = ccaf.best_alpha_
+        self.cv_score_ = ccaf.cv_score_
+
+        return self
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """预测类别"""
+        check_is_fitted(self, 'is_fitted_')
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """预测概率"""
+        check_is_fitted(self, 'is_fitted_')
+        z = X @ self.coef_ + self.intercept_
+        proba_1 = 1 / (1 + np.exp(-np.clip(z, -30, 30)))
+        return np.column_stack([1 - proba_1, proba_1])
+
+    def score(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None) -> float:
+        """默认准确率评分"""
+        from sklearn.metrics import accuracy_score
+        return accuracy_score(y, self.predict(X), sample_weight=sample_weight)

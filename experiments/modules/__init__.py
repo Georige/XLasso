@@ -43,8 +43,11 @@ from .NLasso import (
     AdaptiveFlippedLasso, AdaptiveFlippedLassoClassifier,
     AdaptiveFlippedLassoCV, AdaptiveFlippedLassoClassifierEBIC,
     AdaptiveFlippedLassoEBIC, AdaptiveFlippedLassoCV_EN,
+    AdaptiveFlippedLassoCV_EN_V2,
     AdaptiveFlippedLassoCV_ENClassifier,
     AdaptiveFlippedLassoEBIC_Simple,
+    ConfidenceCalibratedAFL, ConfidenceCalibratedAFLClassifier,
+    APAFLRegressor, APAFLClassifier,
 )
 from .NLasso import metrics as nlasso_metrics
 
@@ -520,7 +523,16 @@ ALGO_REGISTRY = {
     "aflclassifier_cv": AdaptiveFlippedLassoCV,
     "aflclassifier_ebic": AdaptiveFlippedLassoClassifierEBIC,
     "adaptive_flipped_lasso_cv_en": AdaptiveFlippedLassoCV_EN,
+    "adaptive_flipped_lasso_cv_en_v2": AdaptiveFlippedLassoCV_EN_V2,
     "adaptive_flipped_lasso_cv_en_classifier": AdaptiveFlippedLassoCV_ENClassifier,
+    # Ridge-first-stage CV version (not EN)
+    "adaptive_flipped_lasso_cv": AdaptiveFlippedLassoCV,
+    # Confidence-Calibrated AFL (MAD + Variable Splitting)
+    "confidence_calibrated_afl": ConfidenceCalibratedAFL,
+    "confidence_calibrated_afl_classifier": ConfidenceCalibratedAFLClassifier,
+    # AP-AFL (Asymmetrically Penalized Adaptive Flipped Lasso)
+    "apafl_regressor": APAFLRegressor,
+    "apafl_classifier": APAFLClassifier,
     # XLasso (fit_uni/cv_uni)
     "xlasso": XLasso,
     "xlasso_cv": XLassoCV,
@@ -553,7 +565,13 @@ __all__ = [
     "AdaptiveFlippedLassoClassifierEBIC",
     "AdaptiveFlippedLassoEBIC",
     "AdaptiveFlippedLassoCV_EN",
+    "AdaptiveFlippedLassoCV_EN_V2",
     "AdaptiveFlippedLassoCV_ENClassifier",
+    "ConfidenceCalibratedAFL",
+    "ConfidenceCalibratedAFLClassifier",
+    # AP-AFL
+    "APAFLRegressor",
+    "APAFLClassifier",
     "nlasso_metrics",
     # Other Lasso variants
     "AdaptiveLasso",

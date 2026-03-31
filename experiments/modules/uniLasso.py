@@ -154,11 +154,13 @@ class UniLassoCV(BaseSparseSelector):
         verbose: bool = False,
         random_state: int = 42,
         use_1se: bool = True,
+        n_jobs: int = 1,
     ):
         """
         Parameters:
             use_1se: If True, use 1-SE rule to select the most sparse model
                     within 1 standard error of the best score (default True).
+            n_jobs: Number of parallel jobs for fold-level parallelism (-1 = all cores).
         """
         super().__init__(standardize=standardize, fit_intercept=fit_intercept)
         self.lambda_1 = lambda_1
@@ -169,6 +171,7 @@ class UniLassoCV(BaseSparseSelector):
         self.verbose = verbose
         self.random_state = random_state
         self.use_1se = use_1se
+        self.n_jobs = n_jobs
         self.best_lmda_: Optional[float] = None
         self.cv_results_: Optional[Dict] = None
 
@@ -215,6 +218,7 @@ class UniLassoCV(BaseSparseSelector):
                 X=X_scaled, y=y_centered, cv_splits=cv_splits,
                 family=self.family, lmda_min_ratio=self.lmda_min_ratio,
                 verbose=self.verbose, seed=self.random_state,
+                n_jobs=self.n_jobs,
             )
         else:
             self.result_ = cv_unilasso(

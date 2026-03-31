@@ -16,8 +16,13 @@ from .adaptive_flipped_lasso import (
     AdaptiveFlippedLassoClassifierEBIC,
     AdaptiveFlippedLassoEBIC,
     AdaptiveFlippedLassoCV_EN,
+    AdaptiveFlippedLassoCV_EN_V2,
     AdaptiveFlippedLassoCV_ENClassifier,
     AdaptiveFlippedLassoEBIC_Simple,
+    ConfidenceCalibratedAFL,
+    ConfidenceCalibratedAFLClassifier,
+    APAFLRegressor,
+    APAFLClassifier,
 )
 
 __all__ = [
@@ -33,8 +38,14 @@ __all__ = [
     'AdaptiveFlippedLassoClassifierEBIC',
     'AdaptiveFlippedLassoEBIC',
     'AdaptiveFlippedLassoCV_EN',
+    'AdaptiveFlippedLassoCV_EN_V2',
     'AdaptiveFlippedLassoCV_ENClassifier',
     'AdaptiveFlippedLassoEBIC_Simple',
+    'ConfidenceCalibratedAFL',
+    'ConfidenceCalibratedAFLClassifier',
+    # AP-AFL
+    'APAFLRegressor',
+    'APAFLClassifier',
     # Metrics
     'metrics'
 ]

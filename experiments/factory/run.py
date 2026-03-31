@@ -40,7 +40,12 @@ from experiments.modules import (
     AdaptiveFlippedLassoEBIC,
     AdaptiveFlippedLassoClassifierEBIC,
     AdaptiveFlippedLassoCV_EN,
+    AdaptiveFlippedLassoCV_EN_V2,
     AdaptiveFlippedLassoEBIC_Simple,
+    ConfidenceCalibratedAFL,
+    ConfidenceCalibratedAFLClassifier,
+    APAFLRegressor,
+    APAFLClassifier,
     AdaptiveLasso,
     AdaptiveLassoCV,
     FusedLasso,
@@ -72,7 +77,12 @@ ALGO_REGISTRY = {
     "adaptive_flipped_lasso_cv": AdaptiveFlippedLassoCV,
     "adaptive_flipped_lasso_ebic": AdaptiveFlippedLassoEBIC,
     "adaptive_flipped_lasso_cv_en": AdaptiveFlippedLassoCV_EN,
+    "adaptive_flipped_lasso_cv_en_v2": AdaptiveFlippedLassoCV_EN_V2,
     "adaptive_flipped_lasso_ebic_simple": AdaptiveFlippedLassoEBIC_Simple,
+    "confidence_calibrated_afl": ConfidenceCalibratedAFL,
+    "confidence_calibrated_afl_classifier": ConfidenceCalibratedAFLClassifier,
+    "apafl_regressor": APAFLRegressor,
+    "apafl_classifier": APAFLClassifier,
     "aflclassifier": AdaptiveFlippedLassoClassifier,
     "aflclassifier_cv": AdaptiveFlippedLassoCV,
     "aflclassifier_ebic": AdaptiveFlippedLassoClassifierEBIC,
@@ -306,6 +316,39 @@ def get_algo_params(algo_name, config):
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
         })
+    elif algo_name in ["confidence_calibrated_afl", "confidence_calibrated_afl_classifier"]:
+        # ConfidenceCalibratedAFL parameters (MAD + Variable Splitting)
+        params.update({
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 1.0, 10.0]),
+            "gamma_list": config.get("gamma_list", [0.5, 1.0, 2.0]),
+            "cv": config.get("cv_folds", 5),
+            "mad_c": config.get("mad_c", 0.5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+            "weight_clip_max": config.get("weight_clip_max", 100.0),
+            "eps": config.get("eps", 1e-5),
+            "random_state": config.get("random_state", 42),
+        })
+    elif algo_name in ["apafl_regressor", "apafl_classifier"]:
+        # AP-AFL parameters (Asymmetrically Penalized Adaptive Flipped Lasso)
+        params.update({
+            "kappa": config.get("kappa", 100.0),
+            "gamma_list": config.get("gamma_list", [0.3, 0.5, 1.0, 2.0]),
+            "lambda_ridge_list": config.get("lambda_ridge_list", [0.1, 1.0, 10.0, 100.0]),
+            "cv": config.get("cv_folds", 5),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+            "standardize": config.get("standardize", False),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 42),
+            "weight_clip_max": config.get("weight_clip_max", 100.0),
+            "eps": config.get("eps", 1e-5),
+            "n_jobs": config.get("n_jobs", -1),
+        })
     elif algo_name in ["lasso", "lasso_cv"]:
         # Standard sklearn Lasso parameters
         params.update({
@@ -454,7 +497,14 @@ def run_experiment(config_path, output_dir=None, fold=None, dry_run=False):
         print(f"[run] Completed folds: {status.get('completed_folds', [])}")
 
     # Generate data
-    print(f"[run] Generating data: n={config['n_samples']}, p={config['n_features']}")
+    # Determine data family based on algo type
+    algo_name_lower = config.get("algo", "").lower()
+    is_classifier = "classifier" in algo_name_lower or algo_name_lower in [
+        "nlclassifier", "aflclassifier", "aflclassifier_cv", "aflclassifier_ebic"
+    ]
+    family = "binomial" if is_classifier else config.get("family", "gaussian")
+
+    print(f"[run] Generating data: n={config['n_samples']}, p={config['n_features']}, family={family}")
     data_gen = DataGenerator(random_state=config.get("random_state", 42))
     X, y, beta_true = data_gen.generate(
         n_samples=config["n_samples"],
@@ -463,6 +513,7 @@ def run_experiment(config_path, output_dir=None, fold=None, dry_run=False):
         sigma=config.get("sigma", 1.0),
         correlation_type=config.get("correlation_type", "pairwise"),
         rho=config.get("rho", 0.5),
+        family=family,
     )
     config["beta_true"] = beta_true.tolist() if isinstance(beta_true, np.ndarray) else beta_true
 

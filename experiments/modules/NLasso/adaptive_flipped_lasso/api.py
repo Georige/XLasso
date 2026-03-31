@@ -141,7 +141,7 @@ class AdaptiveFlippedLassoCV_ENClassifier(AdaptiveFlippedLassoClassifier, Adapti
     使用 Elastic Net 作为第一阶段先验的二分类版本。
     """
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
         from sklearn.utils.validation import check_X_y
 
         X, y = check_X_y(X, y, accept_sparse=['csr', 'csc'], ensure_2d=True)
@@ -154,7 +154,7 @@ class AdaptiveFlippedLassoCV_ENClassifier(AdaptiveFlippedLassoClassifier, Adapti
         y_continuous = (y == self.classes_[1]).astype(np.float64)
 
         # 显式调用 AdaptiveFlippedLassoCV_EN.fit()
-        return AdaptiveFlippedLassoCV_EN.fit(self, X, y_continuous, sample_weight)
+        return AdaptiveFlippedLassoCV_EN.fit(self, X, y_continuous, sample_weight, cv_splits)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         check_is_fitted(self, 'is_fitted_')
