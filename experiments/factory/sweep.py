@@ -985,6 +985,24 @@ def run_benchmark_trial_with_splits(config, parent_dir, X, y, beta_true, splits)
         fold_metrics["best_lambda_ridge"] = algo.best_lambda_ridge_
     if hasattr(algo, 'cv_score_'):
         fold_metrics["cv_score"] = algo.cv_score_
+    # 计算符号准确率
+    # - signs_ / prior_signs_: 先验符号（PFLRegressorCV, UniLassoCVFit）
+    # - coef_: 最终模型系数（ElasticNet 等其他算法）
+    prior_signs = None
+    if hasattr(algo, 'signs_') and algo.signs_ is not None:
+        prior_signs = algo.signs_
+    elif hasattr(algo, 'prior_signs_') and algo.prior_signs_ is not None:
+        prior_signs = algo.prior_signs_
+    elif hasattr(algo, 'coef_') and algo.coef_ is not None:
+        # 使用最终模型系数的符号（ElasticNet 等）
+        prior_signs = np.sign(algo.coef_)
+        prior_signs[prior_signs == 0] = 1.0
+    if prior_signs is not None:
+        true_signals_idx = np.where(np.abs(beta_true) > 1e-6)[0]
+        if len(true_signals_idx) > 0:
+            signs_true = np.sign(beta_true[true_signals_idx])
+            signs_est = prior_signs[true_signals_idx]
+            fold_metrics["sign_accuracy"] = np.mean(signs_true == signs_est)
     metrics_list.append(fold_metrics)
 
     return {
@@ -1296,6 +1314,55 @@ def get_benchmark_algo_params(algo_name, config):
             "max_iter": config.get("max_iter", 1000),
             "tol": config.get("tol", 1e-4),
         })
+    elif algo_name in ["pfl_regressor", "pfl_regressor_cv"]:
+        # PFL (Pure Flipped Lasso) parameters
+        params.update({
+            "cv": config.get("cv_folds", 5),
+            "gamma": config.get("gamma", 1.0),
+            "weight_cap": config.get("weight_cap", 10.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+            "standardize": config.get("standardize", False),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 2026),
+            "verbose": config.get("verbose", False),
+            "n_jobs": config.get("n_jobs", -1),
+        })
+        if algo_name == "pfl_regressor_cv":
+            params.update({
+                "lambda_ridge_list": config.get("lambda_ridge_list", (0.1, 1.0, 10.0, 100.0)),
+                "fallback_min_nonzero": config.get("fallback_min_nonzero"),
+            })
+        else:
+            params.update({
+                "lambda_ridge": config.get("lambda_ridge", 1.0),
+            })
+    elif algo_name in ["pfl_classifier", "pfl_classifier_cv"]:
+        # PFL Classifier parameters
+        params.update({
+            "cv": config.get("cv_folds", 5),
+            "gamma": config.get("gamma", 1.0),
+            "weight_cap": config.get("weight_cap", 10.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+            "standardize": config.get("standardize", False),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 2026),
+            "verbose": config.get("verbose", False),
+            "n_jobs": config.get("n_jobs", -1),
+        })
+        if algo_name == "pfl_classifier_cv":
+            params.update({
+                "lambda_ridge_list": config.get("lambda_ridge_list", (0.1, 1.0, 10.0, 100.0)),
+            })
+        else:
+            params.update({
+                "lambda_ridge": config.get("lambda_ridge", 1.0),
+            })
     elif algo_name == "elasticnet_1se":
         # ElasticNet1SE has its own specific parameters
         params.update({
@@ -1405,6 +1472,21 @@ def run_benchmark_trial(config, parent_dir):
                 fold_metrics["best_lambda_ridge"] = algo.best_lambda_ridge_
             if hasattr(algo, 'cv_score_'):
                 fold_metrics["cv_score"] = algo.cv_score_
+            # 计算符号准确率
+            prior_signs = None
+            if hasattr(algo, 'signs_') and algo.signs_ is not None:
+                prior_signs = algo.signs_
+            elif hasattr(algo, 'prior_signs_') and algo.prior_signs_ is not None:
+                prior_signs = algo.prior_signs_
+            elif hasattr(algo, 'coef_') and algo.coef_ is not None:
+                prior_signs = np.sign(algo.coef_)
+                prior_signs[prior_signs == 0] = 1.0
+            if prior_signs is not None:
+                true_signals_idx = np.where(np.abs(beta_true) > 1e-6)[0]
+                if len(true_signals_idx) > 0:
+                    signs_true = np.sign(beta_true[true_signals_idx])
+                    signs_est = prior_signs[true_signals_idx]
+                    fold_metrics["sign_accuracy"] = np.mean(signs_true == signs_est)
             metrics_list.append(fold_metrics)
         else:
             # CV
@@ -1445,6 +1527,21 @@ def run_benchmark_trial(config, parent_dir):
                     fold_metrics["best_lambda_ridge"] = algo_fold.best_lambda_ridge_
                 if hasattr(algo_fold, 'cv_score_'):
                     fold_metrics["cv_score"] = algo_fold.cv_score_
+                # 计算符号准确率
+                prior_signs = None
+                if hasattr(algo_fold, 'signs_') and algo_fold.signs_ is not None:
+                    prior_signs = algo_fold.signs_
+                elif hasattr(algo_fold, 'prior_signs_') and algo_fold.prior_signs_ is not None:
+                    prior_signs = algo_fold.prior_signs_
+                elif hasattr(algo_fold, 'coef_') and algo_fold.coef_ is not None:
+                    prior_signs = np.sign(algo_fold.coef_)
+                    prior_signs[prior_signs == 0] = 1.0
+                if prior_signs is not None:
+                    true_signals_idx = np.where(np.abs(beta_true) > 1e-6)[0]
+                    if len(true_signals_idx) > 0:
+                        signs_true = np.sign(beta_true[true_signals_idx])
+                        signs_est = prior_signs[true_signals_idx]
+                        fold_metrics["sign_accuracy"] = np.mean(signs_true == signs_est)
                 repeat_metrics.append(fold_metrics)
 
             # Average across folds
@@ -1591,6 +1688,16 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
             f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
         f.write("\n")
 
+        # Sign Accuracy section
+        if 'sign_accuracy' in results_df.columns:
+            f.write("### 3.5 Sign Accuracy (higher is better)\n\n")
+            model_sign = results_df.groupby('model')['sign_accuracy'].agg(['mean', 'std']).sort_values('mean', ascending=False)
+            f.write("| Model | Sign Acc Mean | Sign Acc Std |\n")
+            f.write("|-------|---------------|--------------|\n")
+            for model, row in model_sign.iterrows():
+                f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+            f.write("\n")
+
         f.write("## 4. Performance Across SNR Levels\n\n")
         f.write("### 4.1 F1 by Sigma\n\n")
         sigma_model_f1 = results_df.pivot_table(values='f1', index='sigma', columns='model', aggfunc='mean')
@@ -1612,22 +1719,47 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
         sigma_model_fdr = sigma_model_fdr.round(4)
         f.write(sigma_model_fdr.to_markdown() + "\n\n")
 
+        # Ridge Prior Sign Accuracy by Sigma
+        if 'sign_accuracy' in results_df.columns:
+            f.write("### 4.5 Ridge Prior Sign Accuracy by Sigma\n\n")
+            sigma_model_sign = results_df.pivot_table(values='sign_accuracy', index='sigma', columns='model', aggfunc='mean')
+            sigma_model_sign = sigma_model_sign.round(4)
+            f.write(sigma_model_sign.to_markdown() + "\n\n")
+
         f.write("## 5. Complete Metrics Summary\n\n")
-        f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 |\n")
-        f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|\n")
-        for sigma in sorted(results_df['sigma'].unique()):
-            for model in models:
-                subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
-                if len(subset) > 0:
-                    snr = subset['snr'].iloc[0]
-                    f1 = subset['f1'].mean()
-                    mse = subset['mse'].mean()
-                    tpr = subset['tpr'].mean()
-                    fdr = subset['fdr'].mean()
-                    prec = subset['precision'].mean()
-                    rec = subset['recall'].mean()
-                    r2 = subset['r2'].mean()
-                    f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} |\n")
+        if 'sign_accuracy' in results_df.columns:
+            f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 | Sign Acc |\n")
+            f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|-----------|\n")
+            for sigma in sorted(results_df['sigma'].unique()):
+                for model in models:
+                    subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
+                    if len(subset) > 0:
+                        snr = subset['snr'].iloc[0]
+                        f1 = subset['f1'].mean()
+                        mse = subset['mse'].mean()
+                        tpr = subset['tpr'].mean()
+                        fdr = subset['fdr'].mean()
+                        prec = subset['precision'].mean()
+                        rec = subset['recall'].mean()
+                        r2 = subset['r2'].mean()
+                        sign_acc = subset['sign_accuracy'].mean()
+                        f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} | {sign_acc:.4f} |\n")
+        else:
+            f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 |\n")
+            f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|\n")
+            for sigma in sorted(results_df['sigma'].unique()):
+                for model in models:
+                    subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
+                    if len(subset) > 0:
+                        snr = subset['snr'].iloc[0]
+                        f1 = subset['f1'].mean()
+                        mse = subset['mse'].mean()
+                        tpr = subset['tpr'].mean()
+                        fdr = subset['fdr'].mean()
+                        prec = subset['precision'].mean()
+                        rec = subset['recall'].mean()
+                        r2 = subset['r2'].mean()
+                        f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} |\n")
         f.write("\n")
 
         f.write("## 6. Rankings Summary\n\n")
@@ -1640,6 +1772,14 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
         for rank, data in rankings['by_mse'].items():
             f.write(f"- {rank}: {data['model']} (MSE={data['mse']:.4f})\n")
         f.write("\n")
+
+        # Rankings by Sign Accuracy
+        if 'sign_accuracy' in results_df.columns:
+            f.write("### 6.3 By Sign Accuracy (higher is better)\n\n")
+            model_sign = results_df.groupby('model')['sign_accuracy'].mean().sort_values(ascending=False)
+            for rank, (model, val) in enumerate(model_sign.items(), 1):
+                f.write(f"- rank_{rank}: {model} (Sign Acc={val:.4f})\n")
+            f.write("\n")
 
         f.write("## 7. Key Findings\n\n")
         best_f1_model = rankings['by_f1']['rank_1']['model']
@@ -1661,6 +1801,14 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
                 if model in high_snr_f1 and model in low_snr_f1:
                     drop = high_snr_f1[model] - low_snr_f1[model]
                     f.write(f"   - {model}: F1 drop = {drop:.4f} (high SNR to low SNR)\n")
+
+        # Sign accuracy findings
+        if 'sign_accuracy' in results_df.columns:
+            f.write("\n4. **Ridge Prior Sign Accuracy**:\n")
+            model_sign = results_df.groupby('model')['sign_accuracy'].mean()
+            for model in models:
+                if model in model_sign:
+                    f.write(f"   - {model}: {model_sign[model]:.4f}\n")
 
         f.write("\n---\n")
         f.write(f"*Report generated: {datetime.now().isoformat()}*\n")

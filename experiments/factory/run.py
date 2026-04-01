@@ -358,6 +358,54 @@ def get_algo_params(algo_name, config):
             "eps": config.get("eps", 1e-5),
             "n_jobs": config.get("n_jobs", -1),
         })
+    elif algo_name in ["pfl_regressor", "pfl_regressor_cv"]:
+        # PFL (Pure Flipped Lasso) parameters
+        params.update({
+            "cv": config.get("cv_folds", 5),
+            "gamma": config.get("gamma", 1.0),
+            "weight_cap": config.get("weight_cap", 10.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+            "standardize": config.get("standardize", False),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 2026),
+            "verbose": config.get("verbose", False),
+            "n_jobs": config.get("n_jobs", -1),
+        })
+        if algo_name == "pfl_regressor_cv":
+            params.update({
+                "lambda_ridge_list": config.get("lambda_ridge_list", (0.1, 1.0, 10.0, 100.0)),
+            })
+        else:
+            params.update({
+                "lambda_ridge": config.get("lambda_ridge", 1.0),
+            })
+    elif algo_name in ["pfl_classifier", "pfl_classifier_cv"]:
+        # PFL Classifier parameters
+        params.update({
+            "cv": config.get("cv_folds", 5),
+            "gamma": config.get("gamma", 1.0),
+            "weight_cap": config.get("weight_cap", 10.0),
+            "alpha_min_ratio": config.get("alpha_min_ratio", 1e-4),
+            "n_alpha": config.get("n_alpha", 100),
+            "max_iter": config.get("max_iter", 1000),
+            "tol": config.get("tol", 1e-4),
+            "standardize": config.get("standardize", False),
+            "fit_intercept": config.get("fit_intercept", True),
+            "random_state": config.get("random_state", 2026),
+            "verbose": config.get("verbose", False),
+            "n_jobs": config.get("n_jobs", -1),
+        })
+        if algo_name == "pfl_classifier_cv":
+            params.update({
+                "lambda_ridge_list": config.get("lambda_ridge_list", (0.1, 1.0, 10.0, 100.0)),
+            })
+        else:
+            params.update({
+                "lambda_ridge": config.get("lambda_ridge", 1.0),
+            })
     elif algo_name in ["lasso", "lasso_cv"]:
         # Standard sklearn Lasso parameters
         params.update({
@@ -438,6 +486,22 @@ def run_single_fold(
     # Add sign accuracy if available (from AP-AFL and similar algorithms)
     if hasattr(algo, 'sign_accuracy_') and algo.sign_accuracy_ is not None:
         fold_metrics["sign_accuracy"] = algo.sign_accuracy_
+    # 计算符号准确率
+    else:
+        prior_signs = None
+        if hasattr(algo, 'signs_') and algo.signs_ is not None:
+            prior_signs = algo.signs_
+        elif hasattr(algo, 'prior_signs_') and algo.prior_signs_ is not None:
+            prior_signs = algo.prior_signs_
+        elif hasattr(algo, 'coef_') and algo.coef_ is not None:
+            prior_signs = np.sign(algo.coef_)
+            prior_signs[prior_signs == 0] = 1.0
+        if prior_signs is not None:
+            true_signals_idx = np.where(np.abs(beta_true) > 1e-6)[0]
+            if len(true_signals_idx) > 0:
+                signs_true = np.sign(beta_true[true_signals_idx])
+                signs_est = prior_signs[true_signals_idx]
+                fold_metrics["sign_accuracy"] = np.mean(signs_true == signs_est)
 
     return fold_metrics, algo.coef_
 

@@ -535,6 +535,7 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
         random_state: int = 2026,
         verbose: bool = False,
         n_jobs: int = -1,
+        fallback_min_nonzero: int = None,
     ):
         self.cv = cv
         self.lambda_ridge_list = lambda_ridge_list
@@ -549,6 +550,7 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
         self.random_state = random_state
         self.verbose = verbose
         self.n_jobs = n_jobs
+        self.fallback_min_nonzero = fallback_min_nonzero
 
         # 初始化属性
         self.coef_ = None
@@ -648,14 +650,15 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
             warnings.simplefilter("ignore")
             ridge_global = RidgeCV(
                 alphas=self.lambda_ridge_list,
-                cv=3,
-                scoring='neg_mean_squared_error'
+                cv=None  # GCV (Generalized Cross-Validation)
             )
             ridge_global.fit(X_global, y)
         beta_ridge_global = ridge_global.coef_
+        self.best_lambda_ridge_ = ridge_global.alpha_
 
         signs_global = np.sign(beta_ridge_global)
         signs_global[signs_global == 0] = 1.0
+        self.signs_ = signs_global  # 存储符号供外部计算符号准确率
 
         raw_weights_global = 1.0 / (np.abs(beta_ridge_global) + 1e-10) ** self.gamma
         weights_global = raw_weights_global / np.min(raw_weights_global)
@@ -673,16 +676,16 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
                   f"range=[{alphas[-1]:.2e}, {alphas[0]:.2e}]")
 
         # ================================================================
-        # 阶段一：K 折严格内部寻优（joblib 并行 + lasso_path 向量化）
+        # 阶段一：K 折严格内部寻优（折间并行，折内用 GCV 选 lambda_ridge）
         # ================================================================
         eps = 1e-10  # 防止除零
 
         def _compute_single_fold_errors(fold_idx, train_idx, val_idx):
-            """单 fold 并行计算：标准化 → 符号先验 → 自适应加权 → lasso_path → MSE 路径"""
+            """单 fold 并行计算：折内标准化 → GCV Ridge → 符号 → lasso_path → MSE 路径"""
             X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
             y_tr, y_va = y[train_idx], y[val_idx]
 
-            # Step 1: 每折内部独立标准化（严格隔离，禁止数据泄露）
+            # Step 1: 折内标准化
             if self.standardize:
                 scaler_fold = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
                 X_tr = scaler_fold.fit_transform(X_tr_raw)
@@ -690,21 +693,22 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
             else:
                 X_tr, X_va = X_tr_raw, X_va_raw
 
-            # Step 2: 纯净符号先验提取（仅在训练折上）
+            # Step 2: 用 GCV 自动选最优 lambda_ridge
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 ridge_cv = RidgeCV(
                     alphas=self.lambda_ridge_list,
-                    cv=3,
-                    scoring='neg_mean_squared_error'
+                    cv=None,  # GCV (Generalized Cross-Validation)
+                    fit_intercept=True
                 )
                 ridge_cv.fit(X_tr, y_tr)
             beta_ridge_fold = ridge_cv.coef_
+            best_lr = ridge_cv.alpha_
 
             signs_fold = np.sign(beta_ridge_fold)
             signs_fold[signs_fold == 0] = 1.0
 
-            # Step 3: 自适应加权 + 绝对象限映射（Min-Anchored 归一化）
+            # Step 3: 自适应加权 + 绝对象限映射
             raw_weights = 1.0 / (np.abs(beta_ridge_fold) + eps) ** self.gamma
             weights_fold = raw_weights / np.min(raw_weights)
             if self.weight_cap is not None:
@@ -713,7 +717,7 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
             X_adaptive_tr = (X_tr * signs_fold) / weights_fold
             X_adaptive_va = (X_va * signs_fold) / weights_fold
 
-            # Step 4: lasso_path 向量化（使用全局统一的 alphas 网格，y 须中心化）
+            # Step 4: lasso_path（使用全局统一的 alphas 网格）
             y_tr_mean = np.mean(y_tr)
             y_tr_centered = y_tr - y_tr_mean
 
@@ -725,16 +729,15 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
                 tol=self.tol,
             )
 
-            # 非零系数数量路径
             nselected_path = np.sum(coefs_path != 0, axis=0)
 
-            # 验证集 MSE 路径（向量化，截距由 y 均值近似）
+            # 验证集 MSE 路径
             preds_va = X_adaptive_va @ coefs_path
             if self.fit_intercept:
                 preds_va += y_tr_mean
 
             mse_path = np.mean((y_va[:, np.newaxis] - preds_va) ** 2, axis=0)
-            return fold_idx, mse_path, nselected_path
+            return fold_idx, mse_path, nselected_path, best_lr
 
         # joblib 并行执行所有 fold
         n_jobs = self.n_jobs if hasattr(self, 'n_jobs') and self.n_jobs is not None else -1
@@ -743,14 +746,14 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
             for fold_idx, (train_idx, val_idx) in enumerate(splits)
         )
 
-        # 收集结果（所有 fold 共用全局 alphas，无须再追踪）
-        for fold_idx, mse_path, nselected_path in parallel_results:
+        # 收集结果
+        for fold_idx, mse_path, nselected_path, best_lr in parallel_results:
             error_matrix[:, fold_idx] = mse_path
             nselected_matrix[:, fold_idx] = nselected_path
             if self.verbose:
-                print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel)")
+                print(f"[Fold {fold_idx + 1}/{n_folds}] GCV selected lambda_ridge={best_lr:.4f}, mean_MSE={np.mean(mse_path):.6f}")
 
-        if self.verbose and n_folds > 0:
+        if self.verbose:
             print(f"[Stage 1] Parallel fold computation done, n_folds={n_folds}")
 
         # ================================================================
@@ -775,6 +778,13 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
             best_alpha_idx = min_mse_idx
             if self.verbose:
                 print(f"[Stage 2] WARNING: 1-SE model has 0 non-zeros, falling back to min_MSE alpha")
+        # 如果设置了 fallback_min_nonzero 且选中模型稀疏度过低，也退回 min MSE 模型
+        elif (self.fallback_min_nonzero is not None and
+              mean_nselected[best_alpha_idx] < self.fallback_min_nonzero):
+            best_alpha_idx = min_mse_idx
+            if self.verbose:
+                print(f"[Stage 2] WARNING: 1-SE model has {mean_nselected[best_alpha_idx]:.0f} non-zeros "
+                      f"(< {self.fallback_min_nonzero}), falling back to min_MSE alpha")
         self.best_alpha_ = alphas[best_alpha_idx]
 
         if self.verbose:
@@ -793,13 +803,12 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
             self.scaler_ = None
             X_std = X
 
-        # RidgeCV on 全量数据 → 最终符号
+        # RidgeCV on 全量数据 → 最终符号 (使用 GCV)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ridge_final = RidgeCV(
                 alphas=self.lambda_ridge_list,
-                cv=self.cv,
-                scoring='neg_mean_squared_error'
+                cv=None  # GCV (Generalized Cross-Validation)
             )
             ridge_final.fit(X_std, y)
         beta_ridge_final = ridge_final.coef_
@@ -847,11 +856,15 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
         else:
             self.intercept_ = float(np.mean(y))
 
-        # Stage 3 兜底：全量拟合后若非零系数为 0，退回 min_MSE alpha 重拟合
-        if np.sum(self.coef_ != 0) == 0:
+        # Stage 3 兜底：全量拟合后若非零系数不足，退回 min_MSE alpha 重拟合
+        n_nonzero = np.sum(self.coef_ != 0)
+        should_fallback = n_nonzero == 0 or (
+            self.fallback_min_nonzero is not None and n_nonzero < self.fallback_min_nonzero
+        )
+        if should_fallback:
             min_mse_alpha = alphas[min_mse_idx]
             if self.verbose:
-                print(f"[Stage 3] WARNING: alpha={self.best_alpha_:.6e} yields 0 non-zeros, "
+                print(f"[Stage 3] WARNING: alpha={self.best_alpha_:.6e} yields {n_nonzero} non-zeros, "
                       f"falling back to min_MSE alpha={min_mse_alpha:.6e}")
             lasso_fallback = Lasso(
                 alpha=min_mse_alpha,

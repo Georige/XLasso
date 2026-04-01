@@ -1,0 +1,46 @@
+# BAFL Parameter Ablation Configuration
+# ======================================
+# 2D grid search over gamma and weight_cap (cap) for BAFL (PFLRegressorCV)
+# Using Exp7 settings: AR(1) Sign Avalanche, n=300, p=500, ρ=0.9
+#
+# Usage:
+#   python factory/bafl_ablation.py --config configs/bafl_ablation_example.yaml
+
+experiment: bafl_ablation_exp7
+algo: pfl_regressor_cv
+description: "BAFL 2D ablation: gamma × weight_cap, Exp7 data (AR(1), rho=0.9)"
+
+# Data generation (Exp7 settings)
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: experiment7
+rho: 0.9
+sigma: 1.0
+random_state: 42
+
+# Experiment settings
+n_repeats: 1
+cv_folds: 5
+n_jobs: -1
+verbose: false
+
+# BAFL fixed parameters
+lambda_ridge_list: [0.1, 1.0, 10.0, 100.0]
+alpha_min_ratio: 0.0001
+n_alpha: 100
+max_iter: 10000
+tol: 0.0001
+standardize: true
+fit_intercept: true
+
+# 2D Parameter Grid for Ablation
+# gamma: controls the power of adaptive weighting (1/|beta_ridge|^gamma)
+gamma_list: [0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0]
+
+# cap (weight_cap): hard cap on adaptive weights
+# null means no cap (effectively infinity)
+cap_list: [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, null]
+
+# Output settings
+output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/bafl_ablation_exp7
