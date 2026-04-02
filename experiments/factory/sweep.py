@@ -596,10 +596,11 @@ def snr_study(config):
     results_df.to_csv(raw_path, index=False)
 
     # Generate summary statistics
-    summary = generate_snr_summary(results_df, exp_dir)
+    family = config.get("family", "gaussian")
+    summary = generate_snr_summary(results_df, exp_dir, family=family)
 
     # Generate sensitivity analysis
-    sensitivity = analyze_snr_sensitivity(results_df)
+    sensitivity = analyze_snr_sensitivity(results_df, family=family)
 
     # Generate best SNR config
     best_config_path = generate_best_config_snr(config, exp_dir, results_df, summary, sensitivity)
@@ -618,18 +619,25 @@ def snr_study(config):
     }
 
 
-def generate_snr_summary(results_df, exp_dir):
+def generate_snr_summary(results_df, exp_dir, family="gaussian"):
     """Generate summary statistics for SNR study."""
-    summary = results_df.groupby('sigma').agg({
-        'f1': ['mean', 'std'],
-        'mse': ['mean', 'std'],
-        'tpr': ['mean', 'std'],
-        'fdr': ['mean', 'std'],
-        'precision': ['mean', 'std'],
-        'recall': ['mean', 'std'],
-        'r2': ['mean', 'std'],
-    }).round(4)
+    is_classification = (family == "binomial")
 
+    common_cols = ['f1', 'tpr', 'fdr', 'precision', 'recall', 'sparsity', 'n_selected']
+    agg_spec = {col: ['mean', 'std'] for col in common_cols}
+
+    if is_classification:
+        if 'accuracy' in results_df.columns:
+            agg_spec['accuracy'] = ['mean', 'std']
+        if 'auc' in results_df.columns:
+            agg_spec['auc'] = ['mean', 'std']
+    else:
+        if 'mse' in results_df.columns:
+            agg_spec['mse'] = ['mean', 'std']
+        if 'r2' in results_df.columns:
+            agg_spec['r2'] = ['mean', 'std']
+
+    summary = results_df.groupby('sigma').agg(agg_spec).round(4)
     summary.columns = ['_'.join(col) for col in summary.columns]
     summary = summary.reset_index()
     summary['snr'] = (1.0 / summary['sigma']).round(2)
@@ -640,12 +648,20 @@ def generate_snr_summary(results_df, exp_dir):
     return summary
 
 
-def analyze_snr_sensitivity(results_df):
+def analyze_snr_sensitivity(results_df, family="gaussian"):
     """Analyze sensitivity of metrics to sigma changes."""
-    sensitivity = {}
+    is_classification = (family == "binomial")
 
-    metrics = ['f1', 'mse', 'tpr', 'fdr', 'precision', 'recall', 'r2']
-    for metric in metrics:
+    common_metrics = ['f1', 'tpr', 'fdr', 'precision', 'recall', 'sparsity', 'n_selected']
+    if is_classification:
+        family_metrics = ['accuracy', 'auc']
+    else:
+        family_metrics = ['mse', 'r2']
+
+    all_metrics = common_metrics + family_metrics
+
+    sensitivity = {}
+    for metric in all_metrics:
         if metric in results_df.columns:
             corr = results_df['sigma'].corr(results_df[metric])
             sensitivity[f"{metric}_corr"] = round(corr, 4)
@@ -874,10 +890,11 @@ def benchmark_study(config):
     results_df.to_csv(raw_path, index=False)
 
     # Generate summary statistics by model and sigma
-    summary = generate_benchmark_summary(results_df, exp_dir)
+    family = config.get("family", "gaussian")
+    summary = generate_benchmark_summary(results_df, exp_dir, family=family)
 
     # Generate rankings
-    rankings = generate_benchmark_rankings(results_df, exp_dir)
+    rankings = generate_benchmark_rankings(results_df, exp_dir, family=family)
 
     # Generate report
     report_path = generate_benchmark_report(config, exp_dir, results_df, summary, rankings)
@@ -968,12 +985,26 @@ def run_benchmark_trial_with_splits(config, parent_dir, X, y, beta_true, splits)
     # ============================================================
     y_pred = algo.predict(X_val)
 
+    # Get y_score (probabilities) for AUC if available
+    y_score = None
+    if hasattr(algo, 'predict_proba'):
+        try:
+            proba = algo.predict_proba(X_val)
+            if proba.ndim == 2 and proba.shape[1] == 2:
+                y_score = proba[:, 1]
+            else:
+                y_score = proba.ravel()
+        except Exception:
+            y_score = None
+
     metrics_calc = MetricCalculator()
     fold_metrics = metrics_calc.calculate(
         y_true=y_val,
         y_pred=y_pred,
         beta_true=beta_true,
         beta_est=algo.coef_,
+        family=config.get("family", "gaussian"),
+        y_score=y_score,
     )
     fold_metrics["fold"] = 0
     fold_metrics["train_time"] = train_time
@@ -1267,6 +1298,7 @@ def get_benchmark_algo_params(algo_name, config):
             "tol": config.get("tol", 1e-4),
             "random_state": config.get("random_state", 42),
             "use_1se": True,  # Enable 1-SE rule
+            "n_jobs": config.get("n_jobs", -1),
         })
     elif algo_name == "fused_lasso":
         params.update({
@@ -1368,9 +1400,13 @@ def get_benchmark_algo_params(algo_name, config):
         params.update({
             "cv_folds": config.get("cv_folds", 5),
             "l1_ratios": [0.1, 0.5, 0.7, 0.9, 0.95, 0.99, 1.0],
-            "max_iter": config.get("max_iter", 5000),
+            "max_iter": config.get("max_iter", 10000),
+            "tol": config.get("tol", 1e-4),
             "random_state": config.get("random_state", 42),
             "verbose": False,
+            "n_jobs": config.get("n_jobs", -1),
+            "family": config.get("family", "gaussian"),
+            "scoring": config.get("scoring", "roc_auc"),
         })
     elif algo_name == "relaxed_lasso_1se":
         # RelaxedLassoCV1SE has its own specific parameters
@@ -1380,6 +1416,9 @@ def get_benchmark_algo_params(algo_name, config):
             "eps": 1e-3,
             "n_alphas": 100,
             "verbose": False,
+            "n_jobs": config.get("n_jobs", -1),
+            "family": config.get("family", "gaussian"),
+            "scoring": config.get("scoring", "roc_auc"),
         })
     else:
         params.update({
@@ -1453,6 +1492,18 @@ def run_benchmark_trial(config, parent_dir):
             # Predict
             y_pred = algo.predict(X_test)
 
+            # Get y_score (probabilities) for AUC if available
+            y_score = None
+            if hasattr(algo, 'predict_proba'):
+                try:
+                    proba = algo.predict_proba(X_test)
+                    if proba.ndim == 2 and proba.shape[1] == 2:
+                        y_score = proba[:, 1]
+                    else:
+                        y_score = proba.ravel()
+                except Exception:
+                    y_score = None
+
             # Calculate metrics
             metrics_calc = MetricCalculator()
             fold_metrics = metrics_calc.calculate(
@@ -1460,6 +1511,8 @@ def run_benchmark_trial(config, parent_dir):
                 y_pred=y_pred,
                 beta_true=beta_true,
                 beta_est=algo.coef_,
+                family=config.get("family", "gaussian"),
+                y_score=y_score,
             )
             fold_metrics["fold"] = repeat
             fold_metrics["train_time"] = train_time
@@ -1508,6 +1561,18 @@ def run_benchmark_trial(config, parent_dir):
                 # Predict
                 y_pred = algo_fold.predict(X_test)
 
+                # Get y_score (probabilities) for AUC if available
+                y_score = None
+                if hasattr(algo_fold, 'predict_proba'):
+                    try:
+                        proba = algo_fold.predict_proba(X_test)
+                        if proba.ndim == 2 and proba.shape[1] == 2:
+                            y_score = proba[:, 1]
+                        else:
+                            y_score = proba.ravel()
+                    except Exception:
+                        y_score = None
+
                 # Calculate metrics
                 metrics_calc = MetricCalculator()
                 fold_metrics = metrics_calc.calculate(
@@ -1515,6 +1580,8 @@ def run_benchmark_trial(config, parent_dir):
                     y_pred=y_pred,
                     beta_true=beta_true,
                     beta_est=algo_fold.coef_,
+                    family=config.get("family", "gaussian"),
+                    y_score=y_score,
                 )
                 fold_metrics["fold"] = fold_idx
                 fold_metrics["train_time"] = train_time
@@ -1560,33 +1627,33 @@ def run_benchmark_trial(config, parent_dir):
     }
 
 
-def generate_benchmark_summary(results_df, exp_dir):
+def generate_benchmark_summary(results_df, exp_dir, family="gaussian"):
     """Generate summary statistics for benchmark by model and sigma."""
+    is_classification = (family == "binomial")
+
+    common_cols = ['f1', 'tpr', 'fdr', 'precision', 'recall', 'sparsity', 'n_selected']
+    common_agg = {col: ['mean', 'std'] for col in common_cols}
+
+    if is_classification:
+        model_summary_agg = {**common_agg}
+        if 'accuracy' in results_df.columns:
+            model_summary_agg['accuracy'] = ['mean', 'std']
+        if 'auc' in results_df.columns:
+            model_summary_agg['auc'] = ['mean', 'std']
+    else:
+        model_summary_agg = {**common_agg}
+        if 'mse' in results_df.columns:
+            model_summary_agg['mse'] = ['mean', 'std']
+        if 'r2' in results_df.columns:
+            model_summary_agg['r2'] = ['mean', 'std']
+
     # Overall summary by model
-    model_summary = results_df.groupby('model').agg({
-        'f1': ['mean', 'std'],
-        'mse': ['mean', 'std'],
-        'tpr': ['mean', 'std'],
-        'fdr': ['mean', 'std'],
-        'precision': ['mean', 'std'],
-        'recall': ['mean', 'std'],
-        'r2': ['mean', 'std'],
-        'sparsity': ['mean', 'std'],
-        'n_selected': ['mean', 'std'],
-    }).round(4)
+    model_summary = results_df.groupby('model').agg(model_summary_agg).round(4)
     model_summary.columns = ['_'.join(col) for col in model_summary.columns]
     model_summary = model_summary.reset_index()
 
-    # Summary by sigma and model
-    sigma_model_summary = results_df.groupby(['sigma', 'snr', 'model']).agg({
-        'f1': ['mean', 'std'],
-        'mse': ['mean', 'std'],
-        'tpr': ['mean', 'std'],
-        'fdr': ['mean', 'std'],
-        'precision': ['mean', 'std'],
-        'recall': ['mean', 'std'],
-        'r2': ['mean', 'std'],
-    }).round(4)
+    # Summary by sigma and model (same agg, add sigma/snr)
+    sigma_model_summary = results_df.groupby(['sigma', 'snr', 'model']).agg(model_summary_agg).round(4)
     sigma_model_summary.columns = ['_'.join(col) for col in sigma_model_summary.columns]
     sigma_model_summary = sigma_model_summary.reset_index()
 
@@ -1603,17 +1670,28 @@ def generate_benchmark_summary(results_df, exp_dir):
     }
 
 
-def generate_benchmark_rankings(results_df, exp_dir):
+def generate_benchmark_rankings(results_df, exp_dir, family="gaussian"):
     """Generate rankings for benchmark metrics."""
     rankings = {}
 
-    # Rank by overall F1 (higher is better)
+    # Rank by overall F1 (higher is better) - always present
     model_f1 = results_df.groupby('model')['f1'].mean().sort_values(ascending=False)
     rankings['by_f1'] = {f"rank_{i+1}": {"model": m, "f1": round(f1, 4)} for i, (m, f1) in enumerate(model_f1.items())}
 
-    # Rank by overall MSE (lower is better)
-    model_mse = results_df.groupby('model')['mse'].mean().sort_values(ascending=True)
-    rankings['by_mse'] = {f"rank_{i+1}": {"model": m, "mse": round(mse, 4)} for i, (m, mse) in enumerate(model_mse.items())}
+    if family == "binomial":
+        # Rank by overall Accuracy (higher is better)
+        if 'accuracy' in results_df.columns:
+            model_acc = results_df.groupby('model')['accuracy'].mean().sort_values(ascending=False)
+            rankings['by_accuracy'] = {f"rank_{i+1}": {"model": m, "accuracy": round(acc, 4)} for i, (m, acc) in enumerate(model_acc.items())}
+
+        # Rank by overall AUC (higher is better)
+        if 'auc' in results_df.columns:
+            model_auc = results_df.groupby('model')['auc'].mean().sort_values(ascending=False)
+            rankings['by_auc'] = {f"rank_{i+1}": {"model": m, "auc": round(auc, 4)} for i, (m, auc) in enumerate(model_auc.items())}
+    else:
+        # Rank by overall MSE (lower is better) for regression
+        model_mse = results_df.groupby('model')['mse'].mean().sort_values(ascending=True)
+        rankings['by_mse'] = {f"rank_{i+1}": {"model": m, "mse": round(mse, 4)} for i, (m, mse) in enumerate(model_mse.items())}
 
     # Rank by FDR (lower is better)
     model_fdr = results_df.groupby('model')['fdr'].mean().sort_values(ascending=True)
@@ -1634,12 +1712,17 @@ def generate_benchmark_rankings(results_df, exp_dir):
 def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
     """Generate comprehensive benchmark report in markdown."""
     report_path = exp_dir / "benchmark_report.md"
+    family = config.get("family", "gaussian")
+    has_accuracy = 'accuracy' in results_df.columns
+    has_auc = 'auc' in results_df.columns
+    has_mse = 'mse' in results_df.columns
+    has_r2 = 'r2' in results_df.columns
 
     with open(report_path, "w") as f:
         f.write(f"# AdaptiveFlippedLasso Benchmark Report\n\n")
         f.write(f"**Date**: {datetime.now().strftime('%Y-%m-%d')}\n")
         f.write(f"**Experiment**: {config['experiment']}\n")
-        f.write(f"**Data**: Exp2 (AR(1), rho=0.8, n=300, p=500, 20 non-zero)\n")
+        f.write(f"**Family**: {family}\n")
         f.write(f"**Repeats**: {config.get('n_repeats', 5)} per configuration\n\n")
 
         f.write("## 1. AdaptiveFlippedLasso Optimal Parameters\n\n")
@@ -1664,15 +1747,39 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
             f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
         f.write("\n")
 
-        f.write("### 3.2 MSE (lower is better)\n\n")
-        model_mse = results_df.groupby('model')['mse'].agg(['mean', 'std']).sort_values('mean', ascending=True)
-        f.write("| Model | MSE Mean | MSE Std |\n")
-        f.write("|-------|----------|--------|\n")
-        for model, row in model_mse.iterrows():
-            f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
-        f.write("\n")
+        if has_accuracy:
+            f.write("### 3.2 Accuracy (higher is better)\n\n")
+            model_acc = results_df.groupby('model')['accuracy'].agg(['mean', 'std']).sort_values('mean', ascending=False)
+            f.write("| Model | Accuracy Mean | Accuracy Std |\n")
+            f.write("|-------|---------------|--------------|\n")
+            for model, row in model_acc.iterrows():
+                f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+            f.write("\n")
 
-        f.write("### 3.3 TPR - True Positive Rate (higher is better)\n\n")
+            if has_auc:
+                f.write("### 3.3 AUC (higher is better)\n\n")
+                model_auc = results_df.groupby('model')['auc'].agg(['mean', 'std']).sort_values('mean', ascending=False)
+                f.write("| Model | AUC Mean | AUC Std |\n")
+                f.write("|-------|----------|---------|\n")
+                for model, row in model_auc.iterrows():
+                    f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+                f.write("\n")
+
+            section_tpr = 4
+        elif has_mse:
+            f.write("### 3.2 MSE (lower is better)\n\n")
+            model_mse = results_df.groupby('model')['mse'].agg(['mean', 'std']).sort_values('mean', ascending=True)
+            f.write("| Model | MSE Mean | MSE Std |\n")
+            f.write("|-------|----------|--------|\n")
+            for model, row in model_mse.iterrows():
+                f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
+            f.write("\n")
+
+            section_tpr = 4
+        else:
+            section_tpr = 3
+
+        f.write(f"### {section_tpr}. TPR - True Positive Rate (higher is better)\n\n")
         model_tpr = results_df.groupby('model')['tpr'].agg(['mean', 'std']).sort_values('mean', ascending=False)
         f.write("| Model | TPR Mean | TPR Std |\n")
         f.write("|-------|----------|--------|\n")
@@ -1680,7 +1787,7 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
             f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
         f.write("\n")
 
-        f.write("### 3.4 FDR - False Discovery Rate (lower is better)\n\n")
+        f.write(f"### {section_tpr + 1}. FDR - False Discovery Rate (lower is better)\n\n")
         model_fdr = results_df.groupby('model')['fdr'].agg(['mean', 'std']).sort_values('mean', ascending=True)
         f.write("| Model | FDR Mean | FDR Std |\n")
         f.write("|-------|----------|--------|\n")
@@ -1690,7 +1797,7 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
 
         # Sign Accuracy section
         if 'sign_accuracy' in results_df.columns:
-            f.write("### 3.5 Sign Accuracy (higher is better)\n\n")
+            f.write(f"### {section_tpr + 2}. Sign Accuracy (higher is better)\n\n")
             model_sign = results_df.groupby('model')['sign_accuracy'].agg(['mean', 'std']).sort_values('mean', ascending=False)
             f.write("| Model | Sign Acc Mean | Sign Acc Std |\n")
             f.write("|-------|---------------|--------------|\n")
@@ -1698,68 +1805,117 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
                 f.write(f"| {model} | {row['mean']:.4f} | {row['std']:.4f} |\n")
             f.write("\n")
 
+        sig_offset = 5 if 'sign_accuracy' in results_df.columns else 4
+
         f.write("## 4. Performance Across SNR Levels\n\n")
         f.write("### 4.1 F1 by Sigma\n\n")
         sigma_model_f1 = results_df.pivot_table(values='f1', index='sigma', columns='model', aggfunc='mean')
         sigma_model_f1 = sigma_model_f1.round(4)
         f.write(sigma_model_f1.to_markdown() + "\n\n")
 
-        f.write("### 4.2 MSE by Sigma\n\n")
-        sigma_model_mse = results_df.pivot_table(values='mse', index='sigma', columns='model', aggfunc='mean')
-        sigma_model_mse = sigma_model_mse.round(4)
-        f.write(sigma_model_mse.to_markdown() + "\n\n")
+        if has_accuracy:
+            f.write("### 4.2 Accuracy by Sigma\n\n")
+            sigma_model_acc = results_df.pivot_table(values='accuracy', index='sigma', columns='model', aggfunc='mean')
+            sigma_model_acc = sigma_model_acc.round(4)
+            f.write(sigma_model_acc.to_markdown() + "\n\n")
 
-        f.write("### 4.3 TPR by Sigma\n\n")
+            if has_auc:
+                f.write("### 4.3 AUC by Sigma\n\n")
+                sigma_model_auc = results_df.pivot_table(values='auc', index='sigma', columns='model', aggfunc='mean')
+                sigma_model_auc = sigma_model_auc.round(4)
+                f.write(sigma_model_auc.to_markdown() + "\n\n")
+        elif has_mse:
+            f.write("### 4.2 MSE by Sigma\n\n")
+            sigma_model_mse = results_df.pivot_table(values='mse', index='sigma', columns='model', aggfunc='mean')
+            sigma_model_mse = sigma_model_mse.round(4)
+            f.write(sigma_model_mse.to_markdown() + "\n\n")
+
+        f.write(f"### {sig_offset}. TPR by Sigma\n\n")
         sigma_model_tpr = results_df.pivot_table(values='tpr', index='sigma', columns='model', aggfunc='mean')
         sigma_model_tpr = sigma_model_tpr.round(4)
         f.write(sigma_model_tpr.to_markdown() + "\n\n")
 
-        f.write("### 4.4 FDR by Sigma\n\n")
+        f.write(f"### {sig_offset + 1}. FDR by Sigma\n\n")
         sigma_model_fdr = results_df.pivot_table(values='fdr', index='sigma', columns='model', aggfunc='mean')
         sigma_model_fdr = sigma_model_fdr.round(4)
         f.write(sigma_model_fdr.to_markdown() + "\n\n")
 
         # Ridge Prior Sign Accuracy by Sigma
         if 'sign_accuracy' in results_df.columns:
-            f.write("### 4.5 Ridge Prior Sign Accuracy by Sigma\n\n")
+            f.write(f"### {sig_offset + 2}. Ridge Prior Sign Accuracy by Sigma\n\n")
             sigma_model_sign = results_df.pivot_table(values='sign_accuracy', index='sigma', columns='model', aggfunc='mean')
             sigma_model_sign = sigma_model_sign.round(4)
             f.write(sigma_model_sign.to_markdown() + "\n\n")
 
         f.write("## 5. Complete Metrics Summary\n\n")
-        if 'sign_accuracy' in results_df.columns:
-            f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 | Sign Acc |\n")
-            f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|-----------|\n")
-            for sigma in sorted(results_df['sigma'].unique()):
-                for model in models:
-                    subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
-                    if len(subset) > 0:
-                        snr = subset['snr'].iloc[0]
-                        f1 = subset['f1'].mean()
-                        mse = subset['mse'].mean()
-                        tpr = subset['tpr'].mean()
-                        fdr = subset['fdr'].mean()
-                        prec = subset['precision'].mean()
-                        rec = subset['recall'].mean()
-                        r2 = subset['r2'].mean()
-                        sign_acc = subset['sign_accuracy'].mean()
-                        f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} | {sign_acc:.4f} |\n")
+        if has_accuracy:
+            if 'sign_accuracy' in results_df.columns:
+                f.write("| sigma | SNR | Model | F1 | Accuracy | AUC | TPR | FDR | Precision | Recall | Sign Acc |\n")
+                f.write("|-------|-----|-------|-----|----------|-----|-----|-----|----------|--------|----------|\n")
+                for sigma in sorted(results_df['sigma'].unique()):
+                    for model in models:
+                        subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
+                        if len(subset) > 0:
+                            snr = subset['snr'].iloc[0]
+                            f1 = subset['f1'].mean()
+                            acc = subset['accuracy'].mean()
+                            auc = subset['auc'].mean() if 'auc' in subset.columns else float('nan')
+                            tpr = subset['tpr'].mean()
+                            fdr = subset['fdr'].mean()
+                            prec = subset['precision'].mean()
+                            rec = subset['recall'].mean()
+                            sign_acc = subset['sign_accuracy'].mean()
+                            f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {acc:.4f} | {auc:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {sign_acc:.4f} |\n")
+            else:
+                f.write("| sigma | SNR | Model | F1 | Accuracy | AUC | TPR | FDR | Precision | Recall |\n")
+                f.write("|-------|-----|-------|-----|----------|-----|-----|-----|----------|--------|\n")
+                for sigma in sorted(results_df['sigma'].unique()):
+                    for model in models:
+                        subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
+                        if len(subset) > 0:
+                            snr = subset['snr'].iloc[0]
+                            f1 = subset['f1'].mean()
+                            acc = subset['accuracy'].mean()
+                            auc = subset['auc'].mean() if 'auc' in subset.columns else float('nan')
+                            tpr = subset['tpr'].mean()
+                            fdr = subset['fdr'].mean()
+                            prec = subset['precision'].mean()
+                            rec = subset['recall'].mean()
+                            f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {acc:.4f} | {auc:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} |\n")
         else:
-            f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 |\n")
-            f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|\n")
-            for sigma in sorted(results_df['sigma'].unique()):
-                for model in models:
-                    subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
-                    if len(subset) > 0:
-                        snr = subset['snr'].iloc[0]
-                        f1 = subset['f1'].mean()
-                        mse = subset['mse'].mean()
-                        tpr = subset['tpr'].mean()
-                        fdr = subset['fdr'].mean()
-                        prec = subset['precision'].mean()
-                        rec = subset['recall'].mean()
-                        r2 = subset['r2'].mean()
-                        f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} |\n")
+            if 'sign_accuracy' in results_df.columns:
+                f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 | Sign Acc |\n")
+                f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|-----------|\n")
+                for sigma in sorted(results_df['sigma'].unique()):
+                    for model in models:
+                        subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
+                        if len(subset) > 0:
+                            snr = subset['snr'].iloc[0]
+                            f1 = subset['f1'].mean()
+                            mse = subset['mse'].mean() if has_mse else float('nan')
+                            tpr = subset['tpr'].mean()
+                            fdr = subset['fdr'].mean()
+                            prec = subset['precision'].mean()
+                            rec = subset['recall'].mean()
+                            r2 = subset['r2'].mean() if has_r2 else float('nan')
+                            sign_acc = subset['sign_accuracy'].mean()
+                            f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} | {sign_acc:.4f} |\n")
+            else:
+                f.write("| sigma | SNR | Model | F1 | MSE | TPR | FDR | Precision | Recall | R2 |\n")
+                f.write("|-------|-----|-------|-----|-----|-----|-----|----------|--------|-----|\n")
+                for sigma in sorted(results_df['sigma'].unique()):
+                    for model in models:
+                        subset = results_df[(results_df['sigma'] == sigma) & (results_df['model'] == model)]
+                        if len(subset) > 0:
+                            snr = subset['snr'].iloc[0]
+                            f1 = subset['f1'].mean()
+                            mse = subset['mse'].mean() if has_mse else float('nan')
+                            tpr = subset['tpr'].mean()
+                            fdr = subset['fdr'].mean()
+                            prec = subset['precision'].mean()
+                            rec = subset['recall'].mean()
+                            r2 = subset['r2'].mean() if has_r2 else float('nan')
+                            f.write(f"| {sigma} | {snr} | {model} | {f1:.4f} | {mse:.4f} | {tpr:.4f} | {fdr:.4f} | {prec:.4f} | {rec:.4f} | {r2:.4f} |\n")
         f.write("\n")
 
         f.write("## 6. Rankings Summary\n\n")
@@ -1768,14 +1924,30 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
             f.write(f"- {rank}: {data['model']} (F1={data['f1']:.4f})\n")
         f.write("\n")
 
-        f.write("### 6.2 By MSE (lower is better)\n\n")
-        for rank, data in rankings['by_mse'].items():
-            f.write(f"- {rank}: {data['model']} (MSE={data['mse']:.4f})\n")
-        f.write("\n")
+        if has_accuracy:
+            if 'by_accuracy' in rankings:
+                f.write("### 6.2 By Accuracy (higher is better)\n\n")
+                for rank, data in rankings['by_accuracy'].items():
+                    f.write(f"- {rank}: {data['model']} (Accuracy={data['accuracy']:.4f})\n")
+                f.write("\n")
+            if 'by_auc' in rankings:
+                f.write("### 6.3 By AUC (higher is better)\n\n")
+                for rank, data in rankings['by_auc'].items():
+                    f.write(f"- {rank}: {data['model']} (AUC={data['auc']:.4f})\n")
+                f.write("\n")
+            rank_offset = 4
+        elif has_mse:
+            f.write("### 6.2 By MSE (lower is better)\n\n")
+            for rank, data in rankings.get('by_mse', {}).items():
+                f.write(f"- {rank}: {data['model']} (MSE={data['mse']:.4f})\n")
+            f.write("\n")
+            rank_offset = 4
+        else:
+            rank_offset = 3
 
         # Rankings by Sign Accuracy
         if 'sign_accuracy' in results_df.columns:
-            f.write("### 6.3 By Sign Accuracy (higher is better)\n\n")
+            f.write(f"### 6.{rank_offset} By Sign Accuracy (higher is better)\n\n")
             model_sign = results_df.groupby('model')['sign_accuracy'].mean().sort_values(ascending=False)
             for rank, (model, val) in enumerate(model_sign.items(), 1):
                 f.write(f"- rank_{rank}: {model} (Sign Acc={val:.4f})\n")
@@ -1784,19 +1956,31 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
         f.write("## 7. Key Findings\n\n")
         best_f1_model = rankings['by_f1']['rank_1']['model']
         best_f1_val = rankings['by_f1']['rank_1']['f1']
-        best_mse_model = rankings['by_mse']['rank_1']['model']
-        best_mse_val = rankings['by_mse']['rank_1']['mse']
-
         f.write(f"1. **Best F1**: {best_f1_model} with F1={best_f1_val:.4f}\n")
-        f.write(f"2. **Best MSE**: {best_mse_model} with MSE={best_mse_val:.4f}\n")
+
+        if has_accuracy:
+            if 'by_accuracy' in rankings:
+                best_acc_model = rankings['by_accuracy']['rank_1']['model']
+                best_acc_val = rankings['by_accuracy']['rank_1']['accuracy']
+                f.write(f"2. **Best Accuracy**: {best_acc_model} with Accuracy={best_acc_val:.4f}\n")
+            if 'by_auc' in rankings:
+                best_auc_model = rankings['by_auc']['rank_1']['model']
+                best_auc_val = rankings['by_auc']['rank_1']['auc']
+                f.write(f"3. **Best AUC**: {best_auc_model} with AUC={best_auc_val:.4f}\n")
+        elif has_mse:
+            if 'by_mse' in rankings:
+                best_mse_model = rankings['by_mse']['rank_1']['model']
+                best_mse_val = rankings['by_mse']['rank_1']['mse']
+                f.write(f"2. **Best MSE**: {best_mse_model} with MSE={best_mse_val:.4f}\n")
 
         # SNR sensitivity analysis
         high_snr = results_df[results_df['sigma'] <= 0.5]
         low_snr = results_df[results_df['sigma'] >= 2.0]
+        finding_num = 3 if has_accuracy else 2
         if len(high_snr) > 0 and len(low_snr) > 0:
             high_snr_f1 = high_snr.groupby('model')['f1'].mean()
             low_snr_f1 = low_snr.groupby('model')['f1'].mean()
-            f.write("\n3. **SNR Sensitivity**:\n")
+            f.write(f"\n{finding_num}. **SNR Sensitivity**:\n")
             for model in models:
                 if model in high_snr_f1 and model in low_snr_f1:
                     drop = high_snr_f1[model] - low_snr_f1[model]
@@ -1804,7 +1988,8 @@ def generate_benchmark_report(config, exp_dir, results_df, summary, rankings):
 
         # Sign accuracy findings
         if 'sign_accuracy' in results_df.columns:
-            f.write("\n4. **Ridge Prior Sign Accuracy**:\n")
+            finding_num = 4 if has_accuracy else 3
+            f.write(f"\n{finding_num}. **Ridge Prior Sign Accuracy**:\n")
             model_sign = results_df.groupby('model')['sign_accuracy'].mean()
             for model in models:
                 if model in model_sign:

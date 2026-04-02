@@ -472,6 +472,27 @@ def run_single_fold(
     # Predict
     y_pred = algo.predict(X_test)
 
+    # Get y_score (probabilities) for AUC if available
+    y_score = None
+    if hasattr(algo, 'predict_proba'):
+        try:
+            proba = algo.predict_proba(X_test)
+            # Use probability of positive class
+            if proba.ndim == 2 and proba.shape[1] == 2:
+                y_score = proba[:, 1]
+            else:
+                y_score = proba.ravel()
+        except Exception:
+            y_score = None
+
+    # Determine family: classifiers must use binomial, not default to gaussian
+    is_classifier = (
+        "classifier" in algo_name or
+        algo_name in ["nlclassifier", "aflclassifier", "aflclassifier_cv", "aflclassifier_ebic",
+                      "pfl_classifier", "pfl_classifier_cv"]
+    )
+    family = "binomial" if is_classifier else config.get("family", "gaussian")
+
     # Calculate metrics
     metrics_calc = MetricCalculator()
     fold_metrics = metrics_calc.calculate(
@@ -479,6 +500,8 @@ def run_single_fold(
         y_pred=y_pred,
         beta_true=beta_true,
         beta_est=algo.coef_,
+        family=family,
+        y_score=y_score,
     )
     fold_metrics["fold"] = fold_idx
     fold_metrics["train_time"] = train_time

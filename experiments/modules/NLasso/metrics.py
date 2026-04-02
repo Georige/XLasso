@@ -76,46 +76,25 @@ def false_discovery_rate(y_true: np.ndarray, y_pred: np.ndarray, beta_true: np.n
 def auc_score(y_true: np.ndarray, y_score: np.ndarray, pos_label: int = 1) -> float:
     """
     AUC（Area Under Curve）：分类任务的曲线下面积
-    简化实现，使用排序法计算
+    使用 sklearn.metrics.roc_auc_score 计算
     """
-    y_true = (y_true == pos_label).astype(int)
+    from sklearn.metrics import roc_auc_score
 
-    # 按预测分数排序
-    sorted_indices = np.argsort(y_score)[::-1]
-    y_true_sorted = y_true[sorted_indices]
+    y_true_binary = (y_true == pos_label).astype(int)
 
-    n_pos = np.sum(y_true)
-    n_neg = len(y_true) - n_pos
+    # 处理边界情况：只有一个类别
+    if len(np.unique(y_true_binary)) < 2:
+        return float('nan')
 
-    if n_pos == 0 or n_neg == 0:
-        return 1.0
+    # 处理边界情况：y_score 全相同
+    if np.all(y_score == y_score[0]):
+        # 所有分数相同 → 返回 nan（无法区分）
+        return float('nan')
 
-    # 计算AUC
-    tp = 0
-    fp = 0
-    last_score = float('inf')
-    auc = 0.0
-    trapezoid_area = 0.0
-
-    for i in range(len(y_true_sorted)):
-        score = y_score[sorted_indices[i]]
-        if score != last_score:
-            if i > 0:
-                # 添加梯形面积
-                auc += (tp + trapezoid_area) * (fp - trapezoid_area) / 2
-            trapezoid_area = tp
-
-        if y_true_sorted[i] == 1:
-            tp += 1
-        else:
-            fp += 1
-
-        last_score = score
-
-    # 添加最后一个梯形面积
-    auc += (tp + trapezoid_area) * (fp - trapezoid_area) / 2
-
-    return auc / (n_pos * n_neg)
+    try:
+        return roc_auc_score(y_true_binary, y_score)
+    except Exception:
+        return float('nan')
 
 
 # =============================================================================

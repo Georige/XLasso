@@ -21,7 +21,9 @@ import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import Lasso, LassoCV, Ridge, RidgeCV, lasso_path
+from sklearn.linear_model import Lasso, LassoCV, Ridge, RidgeCV, lasso_path, LogisticRegression, LogisticRegressionCV
+from sklearn.linear_model._logistic import _log_reg_scoring_path
+from sklearn.metrics import log_loss
 from sklearn.model_selection import KFold
 from joblib import Parallel, delayed
 import warnings
@@ -197,32 +199,37 @@ class PFLRegressor(BaseEstimator, RegressorMixin):
             print(f"[Step 3] X_flipped range: [{np.min(X_flipped):.4f}, {np.max(X_flipped):.4f}]")
 
         # ================================================================
-        # Step 4: 降维正交搜索与终极拟合 (Non-negative LassoCV)
+        # Step 4: L1 正则化逻辑回归（交叉熵极小化）
         # ================================================================
-        # 计算 alpha 路径
+        # C 网格（LogisticRegression: C = 1/alpha，范围与 Lasso 对齐）
         alpha_max = np.max(np.abs(X_flipped.T @ y)) / len(y)
         alpha_min = alpha_max * self.alpha_min_ratio
-        alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
+        C_max = 1.0 / alpha_min  # 最宽松（最多信号）
+        C_min = 1.0 / alpha_max  # 最严格（最多稀疏）
+        Cs = np.logspace(np.log10(C_min), np.log10(C_max), self.n_alpha)
 
-        # LassoCV 交叉验证选择最优 alpha
-        lasso_cv = LassoCV(
-            alphas=alphas,
+        # y 转为 ±1 编码（L1 逻辑回归需要）
+        y_lr = np.where(y > 0.5, 1, -1).astype(_DTYPE)
+
+        lr_cv = LogisticRegressionCV(
+            Cs=Cs,
             cv=self.cv,
-            positive=True,  # 强制非负约束
+            penalty='l1',
+            solver='saga',
+            scoring='roc_auc',
             fit_intercept=self.fit_intercept,
             max_iter=self.max_iter,
             tol=self.tol,
             random_state=self.random_state,
             n_jobs=-1,
         )
-        lasso_cv.fit(X_flipped, y, sample_weight=sample_weight)
-
-        # 最优 alpha 和非负系数
-        best_alpha = lasso_cv.alpha_
-        theta = lasso_cv.coef_
+        lr_cv.fit(X_flipped, y_lr, sample_weight=sample_weight)
+        best_C = lr_cv.C_[0]
+        theta = lr_cv.coef_.ravel()
+        self.best_C_ = best_C
 
         if self.verbose:
-            print(f"[Step 4] LassoCV done: best_alpha={best_alpha:.6f}, non-zero={np.sum(theta > 0)}/{len(theta)}")
+            print(f"[Step 4] L1 LogisticRegression done: best_C={best_C:.6f}, non-zero={np.sum(theta != 0)}/{len(theta)}")
 
         # ================================================================
         # Step 5: 时空逆转与还原 (Space Restoration)
@@ -414,20 +421,25 @@ class PFLClassifier(BaseEstimator, ClassifierMixin):
             X_std = X.copy()
 
         # ================================================================
-        # Step 2: 纯净符号先验提取
+        # Step 2: 纯净符号先验提取（Logistic Regression L2 正则化）
         # ================================================================
+        # y 用 +1/-1 编码，LogisticRegression 天然输出概率 in [0,1]
+        y_lr = np.where(y_continuous > 0.5, 1, -1).astype(_DTYPE)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ridge_cv = RidgeCV(
-                alphas=np.logspace(-4, 4, 50),
+            lr_cv = LogisticRegressionCV(
+                Cs=50,
                 cv=self.cv,
-                scoring='neg_mean_squared_error'
+                scoring='roc_auc',
+                solver='lbfgs',
+                max_iter=1000,
+                random_state=self.random_state,
             )
-            ridge_cv.fit(X_std, y_continuous)
-        beta_ridge = ridge_cv.coef_
-        self.best_lambda_ridge_ = ridge_cv.alpha_
+            lr_cv.fit(X_std, y_lr)
+        beta_lr = lr_cv.coef_.ravel()
+        self.best_C_ = lr_cv.C_[0]
 
-        signs = np.sign(beta_ridge)
+        signs = np.sign(beta_lr)
         signs[signs == 0] = 1.0
 
         # ================================================================
@@ -936,27 +948,34 @@ class PFLRegressorCV(BaseEstimator, RegressorMixin):
 
 class PFLClassifierCV(PFLClassifier):
     """
-    PFL 分类器 - CV 版本
+    PFL 分类器 - CV 版本（高性能重构）
+
+    重构要点（参考 BAFLClassifierCV FISTA 引擎）：
+    1. 先验提取：边缘筛选（Marginal Correlation）替代 LogisticRegressionCV，
+       速度更快，且与最终 FISTA 引擎逻辑一致
+    2. 路径求解：自研 FISTA 逻辑回归路径，纯矩阵实现，天然非负 L1 约束
+    3. 评价坐标：Log-Loss（可导、可反映概率信心）
+    4. 截距还原：FISTA 直接输出截距，无需从 intercept_ 映射
     """
 
     def __init__(
         self,
         cv: int = 5,
-        lambda_ridge_list: tuple = (0.1, 1.0, 10.0, 100.0),
         gamma: float = 1.0,
         weight_cap: float = None,
         alpha_min_ratio: float = 1e-4,
         n_alpha: int = 100,
-        max_iter: int = 1000,
-        tol: float = 1e-4,
-        standardize: bool = False,
+        max_iter: int = 2000,
+        tol: float = 1e-5,
+        standardize: bool = True,
         fit_intercept: bool = True,
         random_state: int = 2026,
         verbose: bool = False,
         n_jobs: int = -1,
+        # 以下为向后兼容参数（已废弃，仅吸收传入值不做任何操作）
+        lambda_ridge_list=None,
     ):
         self.cv = cv
-        self.lambda_ridge_list = lambda_ridge_list
         self.gamma = gamma
         self.weight_cap = weight_cap
         self.alpha_min_ratio = alpha_min_ratio
@@ -969,7 +988,7 @@ class PFLClassifierCV(PFLClassifier):
         self.verbose = verbose
         self.n_jobs = n_jobs
 
-        # 初始化属性（供父类方法使用）
+        # 初始化属性
         self.coef_ = None
         self.intercept_ = 0.0
         self.scaler_ = None
@@ -978,12 +997,10 @@ class PFLClassifierCV(PFLClassifier):
         self.classes_ = None
         self.signs_ = None
         self.best_alpha_ = None
-        self.best_lambda_ridge_ = None
 
     def get_params(self, deep: bool = True) -> dict:
         return {
             'cv': self.cv,
-            'lambda_ridge_list': self.lambda_ridge_list,
             'gamma': self.gamma,
             'weight_cap': self.weight_cap,
             'alpha_min_ratio': self.alpha_min_ratio,
@@ -995,6 +1012,7 @@ class PFLClassifierCV(PFLClassifier):
             'random_state': self.random_state,
             'verbose': self.verbose,
             'n_jobs': self.n_jobs,
+            'lambda_ridge_list': None,  # backward compat
         }
 
     def set_params(self, **params):
@@ -1005,8 +1023,110 @@ class PFLClassifierCV(PFLClassifier):
                 raise ValueError(f"Invalid parameter '{key}' for estimator {self.__class__.__name__}")
         return self
 
+    # =====================================================================
+    # 🚀 自研 FISTA 路径求解器：高性能纯矩阵实现
+    #    - 逻辑回归梯度 Lipschitz = ||X'X||_2 / (4N)
+    #    - 非负 L1 近端算子：ReLU(soft_threshold(x, t*alpha))
+    #    - Nesterov 动量加速
+    #    - 热启动（warm start）：沿 alpha 路径复用上一次解
+    # =====================================================================
+    def _fista_logistic_path(self, X, y, alphas, warm_start_theta=None, warm_start_b=None):
+        """
+        Parameters
+        ----------
+        X : np.ndarray (N, p)
+            特征矩阵（已标准化、已 sign-flip、已加权）
+        y : np.ndarray (N,)
+            标签 {0, 1}
+        alphas : np.ndarray
+            正则化参数序列（从强到弱，即从稀疏到密集）
+        warm_start_theta : np.ndarray, optional
+            热启动系数向量（从上一个 alpha 复用）
+        warm_start_b : float, optional
+            热启动截距
+
+        Returns
+        -------
+        coefs_path : np.ndarray (p, n_alphas)
+            每列对应一个 alpha 的系数向量
+        intercepts_path : np.ndarray (n_alphas,)
+            每列对应一个 alpha 的截距
+        """
+        from scipy.special import expit
+
+        N, p = X.shape
+        n_alphas = len(alphas)
+        coefs_path = np.zeros((p, n_alphas))
+        intercepts_path = np.zeros(n_alphas)
+
+        # --- 幂迭代法估算 Lipschitz 常数 L ---
+        # 逻辑回归梯度的 Lipschitz 常数上限：||X'X||_2 / (4N)
+        rng = np.random.RandomState(self.random_state)
+        v = rng.randn(p)
+        for _ in range(5):
+            v = X.T @ (X @ v)
+            v_norm = np.linalg.norm(v)
+            if v_norm > 0:
+                v = v / v_norm
+        L = np.linalg.norm(X.T @ (X @ v)) / (4.0 * N)
+        step_size = 1.0 / (L + 1e-8)  # 最佳 FISTA 步长 t = 1/L
+
+        # --- FISTA 变量初始化 ---
+        if warm_start_theta is None:
+            theta = np.zeros(p)
+        else:
+            theta = warm_start_theta.copy()
+
+        if warm_start_b is None:
+            b = 0.0
+        else:
+            b = warm_start_b
+
+        y_k = theta.copy()   # Nesterov 加速变量
+        b_k = b
+        t_k = 1.0            # Nesterov 进度参数
+
+        # --- 沿 alpha 路径热启动滑动 ---
+        for i, alpha in enumerate(alphas):
+            for iteration in range(self.max_iter):
+                theta_old = theta.copy()
+                b_old = b
+
+                # 梯度步（Gradient Step）：对数损失梯度
+                sigma = expit(X @ y_k + b_k)
+                err = sigma - y
+                grad_theta = (X.T @ err) / N
+                grad_b = np.mean(err)
+
+                theta_step = y_k - step_size * grad_theta
+                b_step = b_k - step_size * grad_b
+
+                # 近端步（Proximal Step）：非负 L1 = ReLU ∘ soft_thresholding
+                theta = np.maximum(0.0, theta_step - step_size * alpha)
+                b = b_step  # 截距不受 L1 惩罚
+
+                # Nesterov 动量加速
+                t_k_next = (1.0 + np.sqrt(1.0 + 4.0 * t_k ** 2)) / 2.0
+                momentum = (t_k - 1.0) / t_k_next
+                y_k = theta + momentum * (theta - theta_old)
+                b_k = b + momentum * (b - b_old)
+
+                # 收敛检测
+                if (np.max(np.abs(theta - theta_old)) < self.tol and
+                        np.abs(b - b_old) < self.tol):
+                    break
+
+            coefs_path[:, i] = theta
+            intercepts_path[i] = b
+            t_k = 1.0  # 每个 alpha 重新初始化 Nesterov 参数
+            y_k = theta.copy()
+            b_k = b
+
+        return coefs_path, intercepts_path
+
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None, cv_splits=None):
-        from sklearn.model_selection import KFold
+        from sklearn.model_selection import StratifiedKFold
+        from scipy.special import expit
 
         X, y = check_X_y(
             X, y,
@@ -1019,7 +1139,7 @@ class PFLClassifierCV(PFLClassifier):
         )
         self.n_features_in_ = X.shape[1]
 
-        # 严格二值化（防止高 sigma 时浮点噪声导致 unique > 2）
+        # 严格二值化
         y = np.asarray(y).ravel()
         y_binary = np.where(y > 0.5, 1, 0)
         self.classes_ = np.array([0, 1])
@@ -1027,71 +1147,67 @@ class PFLClassifierCV(PFLClassifier):
         if len(np.unique(y_binary)) != 2:
             raise ValueError(f"PFLClassifierCV only supports binary classification, got labels: {np.unique(y_binary)}")
 
-        # 将 y 转为连续值（0/1 概率形式用于回归拟合）
         y_continuous = y_binary.astype(_DTYPE)
 
         if sample_weight is not None:
             sample_weight = np.asarray(sample_weight, dtype=_DTYPE)
 
-        # 注意：不在此处全局标准化！标准化在每个折内部独立进行（严格隔离）
-
-        # 使用提供的 cv_splits 或创建新的
-        if cv_splits is not None:
-            n_folds = len(cv_splits)
-            splits = cv_splits
-        else:
-            n_folds = self.cv
-            kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
-            splits = list(kfold.split(X))
-
-        # 错误矩阵
-        error_matrix = np.full((self.n_alpha, n_folds), np.inf)
-        nselected_matrix = np.zeros((self.n_alpha, n_folds), dtype=int)
-
-        # ================================================================
-        # 阶段零：生成全局统一 alpha 网格（所有 fold 共用同一个序列）
-        # ================================================================
+        # =================================================================
+        # Stage 0: 全局统一 alpha 网格（所有 fold 共用）
+        # 关键：全局标准化仅用于生成 alpha 网格，不参与 CV 寻优
+        # =================================================================
         if self.standardize:
-            scaler_global = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
-            X_global = scaler_global.fit_transform(X)
+            self.scaler_ = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
+            X_global = self.scaler_.fit_transform(X)
         else:
-            X_global = X
+            self.scaler_ = None
+            X_global = X.copy()
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ridge_global = RidgeCV(
-                alphas=self.lambda_ridge_list,
-                cv=3,
-                scoring='neg_mean_squared_error'
-            )
-            ridge_global.fit(X_global, y_continuous)
-        beta_ridge_global = ridge_global.coef_
+        # 边缘筛选先验（Marginal Correlation）：高效且与 FISTA 逻辑一致
+        y_centered = y_continuous - np.mean(y_continuous)
+        marginal_corr = X_global.T @ y_centered
 
-        signs_global = np.sign(beta_ridge_global)
+        signs_global = np.sign(marginal_corr)
         signs_global[signs_global == 0] = 1.0
 
-        raw_weights_global = 1.0 / (np.abs(beta_ridge_global) + 1e-10) ** self.gamma
+        raw_weights_global = 1.0 / (np.abs(marginal_corr) + 1e-10) ** self.gamma
         weights_global = raw_weights_global / np.min(raw_weights_global)
         if self.weight_cap is not None:
             weights_global = np.clip(weights_global, 1.0, self.weight_cap)
 
         X_adaptive_global = (X_global * signs_global) / weights_global
 
+        # alpha 网格（从强到弱）
         alpha_max = np.max(np.abs(X_adaptive_global.T @ y_continuous)) / len(y_continuous)
         alpha_min = alpha_max * self.alpha_min_ratio
         alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), self.n_alpha)[::-1]
 
-        # ================================================================
-        # 阶段一：K 折严格内部寻优（joblib 并行 + lasso_path 向量化）
-        # ================================================================
+        self.signs_ = signs_global
+
+        if self.verbose:
+            print(f"[Stage 0] alpha grid: len={len(alphas)}, "
+                  f"range=[{alphas[-1]:.2e}, {alphas[0]:.2e}], "
+                  f"signs: +={np.sum(signs_global > 0)}, -={np.sum(signs_global < 0)}")
+
+        # =================================================================
+        # Stage 1: K 折严格隔离并行寻优
+        # =================================================================
+        if cv_splits is not None:
+            n_folds = len(cv_splits)
+            splits = cv_splits
+        else:
+            n_folds = self.cv
+            skf = StratifiedKFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
+            splits = list(skf.split(X, y_continuous))
+
         eps = 1e-10
 
-        def _compute_single_fold_errors(fold_idx, train_idx, val_idx):
-            """单 fold 并行计算：标准化 → 符号先验 → 自适应加权 → lasso_path → MSE 路径"""
+        def _compute_single_fold(fold_idx, train_idx, val_idx):
+            """单折并行：折内标准化 → 边缘筛选先验 → FISTA 路径 → Log-Loss 路径"""
             X_tr_raw, X_va_raw = X[train_idx], X[val_idx]
             y_tr, y_va = y_continuous[train_idx], y_continuous[val_idx]
 
-            # Step 1: 每折内部独立标准化
+            # Step 1: 折内独立标准化（严格隔离）
             if self.standardize:
                 scaler_fold = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
                 X_tr = scaler_fold.fit_transform(X_tr_raw)
@@ -1099,155 +1215,117 @@ class PFLClassifierCV(PFLClassifier):
             else:
                 X_tr, X_va = X_tr_raw, X_va_raw
 
-            # Step 2: 纯净符号先验提取
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                ridge_cv = RidgeCV(
-                    alphas=self.lambda_ridge_list,
-                    cv=3,
-                    scoring='neg_mean_squared_error'
-                )
-                ridge_cv.fit(X_tr, y_tr)
-            beta_ridge_fold = ridge_cv.coef_
+            # Step 2: 折内边缘筛选先验
+            y_tr_c = y_tr - np.mean(y_tr)
+            marg_corr_f = X_tr.T @ y_tr_c
+            signs_f = np.sign(marg_corr_f)
+            signs_f[signs_f == 0] = 1.0
 
-            signs_fold = np.sign(beta_ridge_fold)
-            signs_fold[signs_fold == 0] = 1.0
-
-            # Step 3: 自适应加权 + 绝对象限映射（Min-Anchored 归一化）
-            raw_weights = 1.0 / (np.abs(beta_ridge_fold) + eps) ** self.gamma
-            weights_fold = raw_weights / np.min(raw_weights)
+            w_raw_f = 1.0 / (np.abs(marg_corr_f) + eps) ** self.gamma
+            w_f = w_raw_f / np.min(w_raw_f)
             if self.weight_cap is not None:
-                weights_fold = np.clip(weights_fold, 1.0, self.weight_cap)
+                w_f = np.clip(w_f, 1.0, self.weight_cap)
 
-            X_adaptive_tr = (X_tr * signs_fold) / weights_fold
-            X_adaptive_va = (X_va * signs_fold) / weights_fold
+            Xa_tr = (X_tr * signs_f) / w_f
+            Xa_va = (X_va * signs_f) / w_f
 
-            # Step 4: lasso_path 向量化（使用全局统一的 alphas 网格，y 须中心化）
-            y_tr_mean = np.mean(y_tr)
-            y_tr_centered = y_tr - y_tr_mean
+            # Step 3: 🚀 FISTA 逻辑回归路径（热启动）
+            c_path, b_path = self._fista_logistic_path(Xa_tr, y_tr, alphas)
 
-            _, coefs_path, _ = lasso_path(
-                X_adaptive_tr, y_tr_centered,
-                alphas=alphas,
-                positive=True,
-                max_iter=self.max_iter,
-                tol=self.tol,
-            )
+            # Step 4: 验证集 Log-Loss 路径
+            fold_losses = np.full(self.n_alpha, np.inf)
+            for i in range(self.n_alpha):
+                prob_va = expit(Xa_va @ c_path[:, i] + b_path[i])
+                prob_va = np.clip(prob_va, 1e-15, 1.0 - 1e-15)
+                fold_losses[i] = log_loss(y_va, prob_va)
 
-            # 非零系数数量路径
-            nselected_path = np.sum(coefs_path != 0, axis=0)
+            nselected = np.sum(c_path != 0, axis=0)
+            return fold_idx, fold_losses, nselected
 
-            # 验证集 MSE 路径（向量化，截距由 y 均值近似）
-            preds_va = X_adaptive_va @ coefs_path
-            if self.fit_intercept:
-                preds_va += y_tr_mean
-
-            mse_path = np.mean((y_va[:, np.newaxis] - preds_va) ** 2, axis=0)
-            return fold_idx, mse_path, nselected_path
-
-        # joblib 并行执行所有 fold
+        # joblib 并行
         n_jobs = self.n_jobs if hasattr(self, 'n_jobs') and self.n_jobs is not None else -1
         parallel_results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(_compute_single_fold_errors)(fold_idx, train_idx, val_idx)
+            delayed(_compute_single_fold)(fold_idx, train_idx, val_idx)
             for fold_idx, (train_idx, val_idx) in enumerate(splits)
         )
 
-        # 收集结果（所有 fold 共用全局 alphas，无须再追踪）
-        for fold_idx, mse_path, nselected_path in parallel_results:
-            error_matrix[:, fold_idx] = mse_path
-            nselected_matrix[:, fold_idx] = nselected_path
+        # 收集结果
+        error_matrix = np.zeros((self.n_alpha, n_folds))
+        nsel_matrix = np.zeros((self.n_alpha, n_folds))
+        for fold_idx, fold_losses, nselected in parallel_results:
+            error_matrix[:, fold_idx] = fold_losses
+            nsel_matrix[:, fold_idx] = nselected
             if self.verbose:
-                print(f"[Fold {fold_idx + 1}/{n_folds}] completed (parallel)")
+                print(f"[Fold {fold_idx + 1}/{n_folds}] done")
 
-        # ================================================================
-        # 阶段二：1-SE 法则选拔最优 alpha
-        # 在 min_MSE + 1*SE 范围内，选择非零系数最少的模型（最简模型）
-        # ================================================================
-        mean_error = np.mean(error_matrix, axis=1)
-        std_error = np.std(error_matrix, axis=1) / np.sqrt(n_folds)
+        # =================================================================
+        # Stage 2: 1-SE 法则选拔最优 alpha（Log-Loss，越小越好）
+        # =================================================================
+        mean_err = np.mean(error_matrix, axis=1)
+        std_err = np.std(error_matrix, axis=1) / np.sqrt(n_folds)
 
-        min_mse = np.min(mean_error)
-        min_mse_idx = np.argmin(mean_error)
-        se_threshold = min_mse + std_error[min_mse_idx]
+        best_idx = np.argmin(mean_err)
+        se_threshold = mean_err[best_idx] + std_err[best_idx]
 
-        within_se = np.where(mean_error <= se_threshold)[0]
-        mean_nselected = np.mean(nselected_matrix, axis=1)
+        within_se = np.where(mean_err <= se_threshold)[0]
+        mean_nselected = np.mean(nsel_matrix, axis=1)
         best_alpha_idx = int(within_se[np.argmin(mean_nselected[within_se])])
         self.best_alpha_ = alphas[best_alpha_idx]
 
         if self.verbose:
-            print(f"\n[Stage 2] 1-SE rule: min_MSE={min_mse:.6f}, threshold={se_threshold:.6f}, "
-                  f"candidates={len(within_se)}, best_alpha={self.best_alpha_:.6f}, "
+            print(f"\n[Stage 2] 1-SE rule: best_log_loss={mean_err[best_idx]:.6f}, "
+                  f"threshold={se_threshold:.6f}, candidates={len(within_se)}, "
+                  f"best_alpha={self.best_alpha_:.6e}, "
                   f"n_selected={int(mean_nselected[best_alpha_idx])}")
 
-        # ================================================================
-        # 阶段三：全量数据终极拟合
-        # ================================================================
-        if self.standardize:
-            self.scaler_ = StandardScaler(copy=_COPY_WHEN_POSSIBLE)
-            X_std = self.scaler_.fit_transform(X)
-        else:
-            self.scaler_ = None
-            X_std = X
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ridge_final = RidgeCV(
-                alphas=self.lambda_ridge_list,
-                cv=self.cv,
-                scoring='neg_mean_squared_error'
-            )
-            ridge_final.fit(X_std, y_continuous)
-        beta_ridge_final = ridge_final.coef_
-        self.best_lambda_ridge_ = ridge_final.alpha_
-
-        signs_final = np.sign(beta_ridge_final)
-        signs_final[signs_final == 0] = 1.0
-
-        # 自适应加权（带硬上限 cap）+ Min-Anchored 归一化（与 Stage 1 一致）
-        raw_weights_final = 1.0 / (np.abs(beta_ridge_final) + eps) ** self.gamma
-        raw_weights_final = raw_weights_final / np.min(raw_weights_final)
-        if self.weight_cap is not None:
-            raw_weights_final = np.clip(raw_weights_final, 1.0, self.weight_cap)
-        self.weights_ = raw_weights_final
-
-        X_adaptive_final = (X_std * signs_final) / raw_weights_final
-
-        lasso_final = Lasso(
-            alpha=self.best_alpha_,
-            positive=True,
-            fit_intercept=self.fit_intercept,
-            max_iter=self.max_iter,
-            tol=self.tol,
-            random_state=self.random_state,
+        # =================================================================
+        # Stage 3: 全量数据终极拟合 + 时空逆转与截距还原
+        # =================================================================
+        # FISTA 全量拟合（单 alpha）
+        c_final, b_final = self._fista_logistic_path(
+            X_adaptive_global, y_continuous, [self.best_alpha_]
         )
-        lasso_final.fit(X_adaptive_final, y_continuous, sample_weight=sample_weight)
-        theta_final = lasso_final.coef_
+        theta_final = c_final[:, 0]
+        b_final = b_final[0]
 
-        beta_std = theta_final * signs_final / raw_weights_final
+        # 智能兜底：若 1-SE 导致全零，退回 Min Log-Loss 重拟合
+        if np.sum(theta_final != 0) == 0:
+            if self.verbose:
+                print(f"[Stage 3] WARNING: 1-SE alpha={self.best_alpha_:.6e} yields "
+                      f"0 non-zeros, falling back to min Log-Loss alpha")
+            self.best_alpha_ = alphas[best_idx]
+            c_final, b_final = self._fista_logistic_path(
+                X_adaptive_global, y_continuous, [self.best_alpha_]
+            )
+            theta_final = c_final[:, 0]
+            b_final = b_final[0]
+
+        # 时空逆转：还原到标准化空间
+        beta_std = (theta_final * signs_global) / weights_global
 
         if self.standardize:
             self.coef_ = beta_std / self.scaler_.scale_
+            # FISTA 的截距建立在 X_adaptive_global（标准化空间）之上
+            # 物理截距 = b_final - X_adaptive_global_mean @ theta_final
+            X_adaptive_mean = np.mean(X_adaptive_global, axis=0)
+            self.intercept_ = b_final - np.sum(X_adaptive_mean * theta_final)
         else:
             self.coef_ = beta_std
+            self.intercept_ = b_final
 
-        # 截距还原：lasso_final.intercept_ 建立在 X_adaptive_final (非零均值) 之上
-        # 正确公式：intercept_physical = np.mean(y) - X_adaptive_final_mean @ theta_final
-        if self.fit_intercept:
-            X_adaptive_mean = np.mean(X_adaptive_final, axis=0)
-            self.intercept_ = float(np.mean(y_continuous) - np.sum(X_adaptive_mean * theta_final))
-        else:
-            self.intercept_ = float(np.mean(y_continuous))
-
-        self.signs_ = signs_final
+        if self.verbose:
+            print(f"[Stage 3] Final: alpha={self.best_alpha_:.6e}, "
+                  f"non_zero={np.sum(self.coef_ != 0)}/{len(self.coef_)}, "
+                  f"intercept={self.intercept_:.6f}")
 
         self.is_fitted_ = True
         return self
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        from scipy.special import expit
         check_is_fitted(self, 'is_fitted_')
         z = X @ self.coef_ + self.intercept_
-        proba_1 = 1 / (1 + np.exp(-np.clip(z, -30, 30)))
+        proba_1 = expit(z)
         return np.column_stack([1 - proba_1, proba_1])
 
     def predict(self, X: np.ndarray) -> np.ndarray:

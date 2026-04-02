@@ -145,7 +145,8 @@ class AdaptiveLassoCV(AdaptiveLasso):
     def __init__(self, alphas=None, gammas=[1.0, 2.0], fit_intercept=True,
                  standardize=True, max_iter=5000, tol=1e-4, method='lasso',
                  family="gaussian", initial_estimator=None, cv=5,
-                 scoring=None, n_jobs=None, use_1se=True, alpha_min_ratio=1e-4):
+                 scoring=None, n_jobs=None, use_1se=True, alpha_min_ratio=1e-4,
+                 random_state=42):
         """
         初始化参数
         Parameters:
@@ -176,6 +177,7 @@ class AdaptiveLassoCV(AdaptiveLasso):
         self.n_jobs = n_jobs
         self.use_1se = use_1se
         self.alpha_min_ratio = alpha_min_ratio
+        self.random_state = random_state
 
     def fit(self, X, y, sample_weight=None, cv_splits=None):
         """
@@ -219,7 +221,7 @@ class AdaptiveLassoCV(AdaptiveLasso):
             splits = cv_splits
         else:
             n_folds = self.cv
-            kfold = KFold(n_splits=self.cv, shuffle=True, random_state=2026)
+            kfold = KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
             splits = list(kfold.split(X))
 
         # 预分配结果矩阵
@@ -331,21 +333,44 @@ class AdaptiveLassoCV(AdaptiveLasso):
                             fold_gamma_errors[alpha_idx] = mse
                             fold_gamma_nselected[alpha_idx] = np.sum(coef_scaled != 0)
                 else:
-                    # 分类：仍用逐个 LogisticRegression（无等效 path 函数）
-                    for alpha_idx, alpha in enumerate(alphas):
-                        model = LogisticRegression(
-                            penalty='l1', C=1.0/alpha if alpha > 0 else 1e10,
-                            fit_intercept=self.fit_intercept, max_iter=self.max_iter,
-                            tol=self.tol, solver='liblinear'
-                        )
-                        model.fit(X_adaptive_tr, y_tr, sample_weight=sw_tr)
-                        coef_scaled = model.coef_[0]
-                        intercept_ = model.intercept_[0] if self.fit_intercept else 0.0
+                    # 分类：用 warm_start 构建系数路径，向量化替代逐个独立拟合
+                    # alphas 从大到小（强→弱正则化），对应 C 从小到大
+                    # warm_start=True：每个 fit 从上一个解出发继续优化
+                    alphas_desc = alphas[::-1]  # strong reg → weak reg
+                    Cs_asc = 1.0 / alphas_desc  # small C → large C (weak reg → strong reg)
+                    n_Cs = len(Cs_asc)
 
-                        # 还原系数
+                    fold_gamma_errors = np.full(n_alpha, np.inf)
+                    fold_gamma_nselected = np.zeros(n_alpha)
+
+                    coefs_current = np.zeros(X_adaptive_tr.shape[1])
+                    intercept_current = np.array([0.0])
+
+                    for c_idx, C in enumerate(Cs_asc):
+                        lr = LogisticRegression(
+                            penalty='l1', C=C,
+                            fit_intercept=self.fit_intercept,
+                            max_iter=self.max_iter, tol=self.tol,
+                            solver='liblinear',
+                            warm_start=True,
+                            random_state=self.random_state
+                        )
+                        # 从上一个解热启动
+                        lr.coef_ = coefs_current.reshape(1, -1)
+                        lr.intercept_ = intercept_current
+                        lr.fit(X_adaptive_tr, y_tr, sample_weight=sw_tr)
+                        coefs_current = lr.coef_.ravel()
+                        intercept_current = lr.intercept_
+
+                        # 还原系数（原始空间）
+                        coef_scaled = coefs_current
+                        intercept_ = intercept_current[0] if self.fit_intercept else 0.0
                         coef_ = coef_scaled / weights
                         z_va = X_va @ coef_ + intercept_
                         y_pred_va = 1 / (1 + np.exp(-np.clip(z_va, -30, 30)))
+
+                        # 在结果矩阵中正确位置（alphas_desc 逆序对应 alphas 正序）
+                        alpha_idx = n_alpha - 1 - c_idx
 
                         if self.scoring == 'neg_mean_squared_error':
                             mse = np.mean((y_va - y_pred_va) ** 2)

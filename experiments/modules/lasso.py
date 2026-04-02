@@ -157,6 +157,7 @@ class LassoCV(BaseSparseSelector):
         cv: int = 5,
         random_state: int = 42,
         use_1se: bool = True,
+        n_jobs: int = -1,
     ):
         super().__init__(standardize=standardize, fit_intercept=fit_intercept)
         self.alphas = alphas
@@ -166,6 +167,7 @@ class LassoCV(BaseSparseSelector):
         self.cv = cv
         self.random_state = random_state
         self.use_1se = use_1se
+        self.n_jobs = n_jobs
         self.coef_: Optional[np.ndarray] = None
         self.intercept_: Optional[float] = None
         self.n_features_in_: Optional[int] = None
@@ -276,7 +278,7 @@ class LassoCV(BaseSparseSelector):
             sw_tr = sample_weight[train_idx] if sample_weight is not None else None
 
             # 并行：对当前 fold 的所有 alpha 候选求 MSE
-            mse_results = Parallel(n_jobs=-1, prefer="threads", verbose=0)(
+            mse_results = Parallel(n_jobs=self.n_jobs, prefer="threads", verbose=0)(
                 delayed(_eval_alpha_on_fold)(alpha, X_tr, y_tr, X_val, y_val, sw_tr)
                 for alpha in alphas
             )

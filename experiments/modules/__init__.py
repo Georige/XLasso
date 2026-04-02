@@ -96,52 +96,76 @@ class MetricCalculator:
         beta_true: np.ndarray,
         beta_est: np.ndarray,
         threshold: float = 1e-6,
+        family: str = "gaussian",
+        y_score: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
-        """Calculate all metrics."""
+        """Calculate all metrics.
+
+        Parameters
+        ----------
+        family : str
+            "gaussian" for regression, "binomial" for binary classification.
+        y_score : np.ndarray, optional
+            Prediction scores/probabilities for AUC computation (classification only).
+        """
         from .NLasso.metrics import (
             mean_squared_error,
             r2_score,
+            accuracy_score,
+            f1_score,
+            auc_score,
         )
 
-        # Regression metrics
-        mse = mean_squared_error(y_true, y_pred)
-        r2 = r2_score(y_true, y_pred)
-
-        # Feature selection metrics
+        # Feature selection metrics (computed for both families)
         true_nonzero = np.where(np.abs(beta_true) > threshold)[0]
         selected = np.where(np.abs(beta_est) > threshold)[0]
         n_selected = len(selected)
 
-        # TPR: How many true nonzero features were selected
         true_nonzero_set = set(true_nonzero)
         selected_set = set(selected)
         tp = len(true_nonzero_set & selected_set)
         fn = len(true_nonzero_set - selected_set)
         tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-
-        # FDR: How many selected features are false positives
         fp = len(selected_set - true_nonzero_set)
         fdr = fp / (fp + tp) if (fp + tp) > 0 else 0.0
-
-        # Precision, Recall, F1
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         recall = tpr
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-
-        # Sparsity
         sparsity = 1.0 - n_selected / len(beta_true) if len(beta_true) > 0 else 0.0
 
-        return {
-            "mse": mse,
-            "r2": r2,
-            "f1": f1,
-            "tpr": tpr,
-            "fdr": fdr,
-            "precision": precision,
-            "recall": recall,
-            "sparsity": sparsity,
-            "n_selected": n_selected,
-        }
+        if family == "binomial":
+            # Classification metrics
+            acc = accuracy_score(y_true, y_pred)
+            f1 = f1_score(y_true, y_pred)
+            auc = auc_score(y_true, y_score) if y_score is not None else 0.0
+
+            return {
+                "accuracy": acc,
+                "f1": f1,
+                "auc": auc,
+                "tpr": tpr,
+                "fdr": fdr,
+                "precision": precision,
+                "recall": recall,
+                "sparsity": sparsity,
+                "n_selected": n_selected,
+            }
+        else:
+            # Regression metrics
+            mse = mean_squared_error(y_true, y_pred)
+            r2 = r2_score(y_true, y_pred)
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+            return {
+                "mse": mse,
+                "r2": r2,
+                "f1": f1,
+                "tpr": tpr,
+                "fdr": fdr,
+                "precision": precision,
+                "recall": recall,
+                "sparsity": sparsity,
+                "n_selected": n_selected,
+            }
 
 
 class CrossValidator:
