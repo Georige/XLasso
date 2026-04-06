@@ -1,4 +1,0 @@
-sigma,snr,model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std
-0.5,2.0,AdaptiveFlippedLassoCV,0.9492,0.0403,0.5395,0.2178,1.0,0.0,0.0944,0.0734,0.9056,0.0734,1.0,0.0,0.9975,0.0009
-2.0,0.5,AdaptiveFlippedLassoCV,0.6392,0.1839,5.7569,0.6662,1.0,0.0,0.5097,0.191,0.4903,0.191,1.0,0.0,0.9729,0.0046
-10.0,0.1,AdaptiveFlippedLassoCV,0.2101,0.0599,114.1471,17.7516,0.3,0.0354,0.8332,0.0616,0.1668,0.0616,0.3,0.0354,0.6192,0.0529

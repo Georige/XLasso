@@ -1,9 +1,0 @@
-experiment: tecator_random_adaptive_flipped_lasso_cv
-dataset: tecator
-algo: adaptive_flipped_lasso_cv
-mode: random
-window_size: 120
-n_iter: 10
-train_ratio: 0.7
-random_seed: 42
-output_dir: experiments/results/realdata

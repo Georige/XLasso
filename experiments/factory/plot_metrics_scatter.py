@@ -94,7 +94,7 @@ def plot_scatter_by_snr(
     df,
     metric,
     jitter=0.15,
-    alpha=0.6,
+    alpha=1.0,
     marker_size=80,
     title=None,
     show_legend=True,
@@ -183,6 +183,7 @@ def plot_scatter_by_snr(
             'fdr': 'lower right',
             'tpr': 'lower left',
             'mse': 'upper left',
+            'f1': 'lower left',
         }
         legend_loc = legend_loc_map.get(metric, 'upper right')
         ax.legend([h for _, h in sorted_items], [l for l, _ in sorted_items],
@@ -313,8 +314,8 @@ def main():
         metric_display = get_metric_display_name(args.metric)
         # No title for all experiments
         title = None
-        # Only show legend for exp1
-        show_legend = (args.exp == 1)
+        # Only show legend for f1 metric
+        show_legend = (args.metric == 'f1')
         # Exp3 is classification, use accuracy instead of mse
         if args.metric == 'mse' and args.exp == 3:
             print("  Note: Exp3 is classification, skipping MSE (no MSE column)")

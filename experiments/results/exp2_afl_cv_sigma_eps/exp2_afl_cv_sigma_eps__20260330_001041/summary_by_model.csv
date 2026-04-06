@@ -1,3 +1,0 @@
-model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std,sparsity_mean,sparsity_std,n_selected_mean,n_selected_std
-AFL-CV (eps=1e-10),0.6194,0.2499,41.1546,57.0565,0.7567,0.3262,0.4616,0.2138,0.5384,0.2138,0.7567,0.3262,0.7597,0.3037,0.9436,0.0158,28.2,7.8849
-AFL-CV (eps=1e-5),0.6194,0.2499,41.1546,57.0565,0.7567,0.3262,0.4616,0.2138,0.5384,0.2138,0.7567,0.3262,0.7597,0.3037,0.9436,0.0158,28.2,7.8849

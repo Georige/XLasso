@@ -1,2 +1,0 @@
-sigma,snr,model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std
-2.0,0.5,AFL-CV-1SE,0.6324,0.0721,6.9741,0.7657,0.75,0.0889,0.4425,0.0611,0.5575,0.0611,0.75,0.0889,0.98,0.0003

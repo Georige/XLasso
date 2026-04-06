@@ -1,15 +1,15 @@
-# Exp2 AdaptiveFlippedLassoCV_EN vs AdaptiveLassoCV Sigma Sensitivity Benchmark
+# Exp2 PFL vs AdaptiveLassoCV Sigma Sensitivity Benchmark
 # ============================================================================
 # Exp2 settings: AR(1) correlation rho=0.8, n=300, p=500, odd-indexed first 20 variables β=1.0
-# Methods: AdaptiveFlippedLassoCV_EN (ElasticNet prior, no weight clip) vs AdaptiveLassoCV (fixed)
+# Methods: PFLRegressorCV (BAFL) vs AdaptiveLassoCV (fixed)
 # Repeats: 5 (external repeats for each sigma value)
 #
 # Usage:
 #   python factory/sweep.py benchmark --config configs/exp2_afl_cv_sigma.yaml
 
-experiment: exp2_afl_cv_en_vs_adaptive
-description: "Exp2 sigma sensitivity: AFL-CV-EN (ElasticNet prior) vs AdaptiveLassoCV, 5 repeats"
-algo: adaptive_flipped_lasso_cv_en
+experiment: exp2_pfl_vs_adaptive
+description: "Exp2 sigma sensitivity: PFLRegressorCV (BAFL) vs AdaptiveLassoCV, 5 repeats"
+algo: pfl_regressor_cv
 
 # Data generation parameters (Exp2 settings)
 n_samples: 300
@@ -20,37 +20,45 @@ rho: 0.8
 random_state: 42
 
 # External experiment settings
-n_repeats: 5
+n_repeats: 20
 cv_folds: 10
 
 # Primary metric
 primary_metric: f1
+max_iter: 10000
 
 # Sigma values to test
 search_space:
-  sigma: [0.5, 2.0, 10.0]
-
-# AdaptiveFlippedLassoCV_EN parameters (ElasticNet first stage, no weight clipping)
-lambda_ridge_list: [0.1, 1.0, 5.0, 10.0]
-l1_ratio_list: [0.1, 0.5, 0.9]
-gamma_list: [0.3, 0.5, 0.7, 1.0, 2.0, 3.0]
-alpha_min_ratio: 0.0001
-n_alpha: 30
-max_iter: 100000
-tol: 0.0001
-use_post_ols_debiasing: false
-auto_tune_collinearity: false
-weight_clip_max: null  # No clipping for EN variant
-eps: 1.0e-5
-
+  sigma: [0.5, 1.0, 2.0, 3.0]
 
 compare_models:
-  - algo: adaptive_flipped_lasso_cv_en
-    display: AFL-CV-EN (ElasticNet)
+  - algo: pfl_regressor_cv
+    display: CG-Lasso
     cv: true
+    lambda_ridge_list: [0.1, 1.0, 10.0, 100.0]
+    gamma: 1.0
+    weight_cap: 10.0
+    alpha_min_ratio: 0.0001
+    n_alpha: 100
+    max_iter: 10000
+    tol: 0.0001
+    standardize: true
+    fit_intercept: true
   - algo: adaptive_lasso_cv
     display: AdaptiveLassoCV (fixed)
     cv: true
+  - algo: lasso_cv
+    display: LassoCV
+    cv: true
+  - algo: unilasso_cv
+    display: UnilassoCV
+    cv: true
+  - algo: relaxed_lasso_1se
+    display: RelaxedLassoCV
+    cv: true
+  - algo: elasticnet_1se
+    display: ElasticNetCV
+    cv: true
 
 # Output settings
-output_dir: /home/lili/lyn/clear/NLasso/XLasso/experiments/results/exp2_afl_cv_en_vs_adaptive
+output_dir: ./experiments/results/exp2_pfl_vs_adaptive

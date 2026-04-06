@@ -1,0 +1,23 @@
+# Core scientific computing
+numpy>=1.26.0
+pandas>=2.2.0
+scipy>=1.13.0
+scikit-learn>=1.8.0
+
+# Visualization
+matplotlib>=3.9.0
+
+# Configuration
+pyyaml>=6.0
+
+# Parallel computing
+joblib>=1.4.0
+
+# Performance acceleration
+numba>=0.60.0
+
+# Terminal output
+colorama>=0.4.6
+
+# External sparse regression package
+unilasso>=1.0.0

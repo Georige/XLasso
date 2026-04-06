@@ -1,0 +1,112 @@
+by_f1:
+  rank_1:
+    model: LogisticRegressionCV
+    f1: 0.9903
+  rank_2:
+    model: PFLClassifierCV (BAFL, gamma=1.0, cap=10.0)
+    f1: 0.9902
+  rank_3:
+    model: UnilassoCV
+    f1: 0.9867
+  rank_4:
+    model: RelaxedLassoCV
+    f1: 0.9802
+  rank_5:
+    model: AdaptiveLassoCV (fixed)
+    f1: 0.8769
+by_accuracy:
+  rank_1:
+    model: LogisticRegressionCV
+    accuracy: 0.9906
+  rank_2:
+    model: PFLClassifierCV (BAFL, gamma=1.0, cap=10.0)
+    accuracy: 0.9904
+  rank_3:
+    model: UnilassoCV
+    accuracy: 0.9869
+  rank_4:
+    model: RelaxedLassoCV
+    accuracy: 0.9808
+  rank_5:
+    model: AdaptiveLassoCV (fixed)
+    accuracy: 0.8898
+by_auc:
+  rank_1:
+    model: LogisticRegressionCV
+    auc: 0.9978
+  rank_2:
+    model: PFLClassifierCV (BAFL, gamma=1.0, cap=10.0)
+    auc: 0.9977
+  rank_3:
+    model: RelaxedLassoCV
+    auc: 0.9966
+  rank_4:
+    model: AdaptiveLassoCV (fixed)
+    auc: 0.9739
+  rank_5:
+    model: UnilassoCV
+    auc: 0.0
+by_selection_f1:
+  rank_1:
+    model: PFLClassifierCV (BAFL, gamma=1.0, cap=10.0)
+    selection_f1: 0.8998
+  rank_2:
+    model: UnilassoCV
+    selection_f1: 0.8187
+  rank_3:
+    model: LogisticRegressionCV
+    selection_f1: 0.7951
+  rank_4:
+    model: AdaptiveLassoCV (fixed)
+    selection_f1: 0.3422
+  rank_5:
+    model: RelaxedLassoCV
+    selection_f1: 0.1321
+by_selection_accuracy:
+  rank_1:
+    model: PFLClassifierCV (BAFL, gamma=1.0, cap=10.0)
+    selection_accuracy: 0.9926
+  rank_2:
+    model: UnilassoCV
+    selection_accuracy: 0.988
+  rank_3:
+    model: LogisticRegressionCV
+    selection_accuracy: 0.9838
+  rank_4:
+    model: AdaptiveLassoCV (fixed)
+    selection_accuracy: 0.9684
+  rank_5:
+    model: RelaxedLassoCV
+    selection_accuracy: 0.2555
+by_fdr:
+  rank_1:
+    model: AdaptiveLassoCV (fixed)
+    fdr: 0.0
+  rank_2:
+    model: UnilassoCV
+    fdr: 0.0
+  rank_3:
+    model: PFLClassifierCV (BAFL, gamma=1.0, cap=10.0)
+    fdr: 0.0568
+  rank_4:
+    model: LogisticRegressionCV
+    fdr: 0.0874
+  rank_5:
+    model: RelaxedLassoCV
+    fdr: 0.9219
+by_tpr:
+  rank_1:
+    model: RelaxedLassoCV
+    tpr: 0.965
+  rank_2:
+    model: PFLClassifierCV (BAFL, gamma=1.0, cap=10.0)
+    tpr: 0.8875
+  rank_3:
+    model: LogisticRegressionCV
+    tpr: 0.7344
+  rank_4:
+    model: UnilassoCV
+    tpr: 0.7
+  rank_5:
+    model: AdaptiveLassoCV (fixed)
+    tpr: 0.2094

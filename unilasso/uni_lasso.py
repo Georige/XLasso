@@ -554,13 +554,20 @@ def _format_unilasso_input(
 
 
 def _format_y(
-        y: Union[np.ndarray, pd.DataFrame], 
+        y: Union[np.ndarray, pd.DataFrame],
         family: str) -> np.ndarray:
     """Format and validate y based on the family."""
     if family in {"gaussian", "binomial"}:
-        y = np.array(y, dtype=float).flatten()
-        if family == "binomial" and not np.all(np.isin(y, [0, 1])):
-            raise ValueError("For `binomial` family, y must be binary with values 0 and 1.")
+        y_orig = np.asarray(y).flatten()
+        if family == "binomial":
+            # Check binary before float conversion (avoids precision issues)
+            y_int = np.asarray(y).astype(int)
+            if not np.all(np.isin(y_int, [0, 1])):
+                raise ValueError("For `binomial` family, y must be binary with values 0 and 1.")
+            # Convert to float after validation
+            y = y_int.astype(float)
+        else:
+            y = np.array(y, dtype=float).flatten()
     elif family == "cox":
         if isinstance(y, (pd.DataFrame, dict)):
             if not 'time' in y.columns or not 'status' in y.columns:
@@ -994,7 +1001,8 @@ def cv_unilasso_with_splits(
             family: str = "gaussian",
             lmda_min_ratio: float = None,
             verbose: bool = False,
-            seed: Optional[int] = None
+            seed: Optional[int] = None,
+            n_jobs: int = 1,
 ) -> UniLassoCVResult:
     """
     Perform cross-validation UniLasso with EXTERNAL CV splits.
@@ -1011,12 +1019,14 @@ def cv_unilasso_with_splits(
         lmda_min_ratio: Minimum ratio of the largest to smallest regularization parameter.
         verbose: Whether to print results.
         seed: Random seed (used for refit).
+        n_jobs: Number of parallel jobs for fold-level parallelism (-1 = all cores).
 
     Returns:
         UniLassoCVResult containing cross-validation results.
     """
-    from sklearn.linear_model import LassoCV, Lasso
+    from sklearn.linear_model import Lasso
     from sklearn.preprocessing import StandardScaler
+    from joblib import Parallel, delayed
 
     if lmda_min_ratio is None:
         lmda_min_ratio = _configure_lmda_min_ratio(X.shape[0], X.shape[1])
@@ -1029,59 +1039,74 @@ def cv_unilasso_with_splits(
 
     n_folds = len(cv_splits)
 
-    # Step 2: Manual CV using sklearn LassoCV with provided splits
-    # Generate alpha path
+    # Step 2: Generate alpha path
     alpha_max = np.max(np.abs(loo_fits.T @ y)) / len(y)
     alpha_min = alpha_max * lmda_min_ratio
     alphas = np.logspace(np.log10(alpha_min), np.log10(alpha_max), 100)[::-1]
 
-    # Standardize features for CV
-    scaler = StandardScaler()
-    loo_fits_scaled = scaler.fit_transform(loo_fits)
+    # NOTE: StandardScaler is NOT fit globally here. Each fold will fit its own scaler
+    # on training data only, to avoid validation-data leakage in scaling statistics.
 
-    # Manual CV with provided splits
-    mse_path = np.full((len(alphas), n_folds), np.inf)
-    n_nonzero_path = np.zeros((len(alphas), n_folds))
+    # -----------------------------------------------------------
+    # Parallel fold evaluation (with alpha-level parallelism inside each fold)
+    # -----------------------------------------------------------
+    def _compute_fold_errors(fold_idx: int, train_idx: np.ndarray, val_idx: np.ndarray):
+        """Compute MSE path for a single fold using lasso_path + parallel alpha eval.
 
-    for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
-        X_tr = loo_fits_scaled[train_idx]
-        X_va = loo_fits_scaled[val_idx]
+        Strict data isolation:
+        - scaler is fit on training fold only (no validation data leakage)
+        - LOO fits were pre-computed on full data (UniLasso's standard approximation)
+        """
+        from sklearn.linear_model import lasso_path
+
+        # Per-fold standardization (strict: only training fold used to fit scaler)
+        scaler_fold = StandardScaler()
+        loo_fits_tr = scaler_fold.fit_transform(loo_fits[train_idx])
+        loo_fits_va = scaler_fold.transform(loo_fits[val_idx])
         y_tr = y[train_idx]
         y_va = y[val_idx]
 
-        # Fit lasso path on training fold
-        lasso_path_model = LassoCV(
+        # lasso_path computes the full regularization path in one call (efficient)
+        # Note: lasso_path does not support fit_intercept; data must be centered beforehand
+        _, coefs_path, _ = lasso_path(
+            loo_fits_tr, y_tr,
             alphas=alphas,
-            cv=None,  # We'll do manual CV
-            fit_intercept=False,
-            max_iter=5000,
-            tol=1e-7,
-            random_state=seed,
-            precompute=False
+            positive=True,
         )
-        lasso_path_model.fit(X_tr, y_tr)
+        # coefs_path: shape (n_features, n_alphas)
 
-        # Predict on validation fold for all alphas
-        # We need to manually compute MSE for each alpha
-        _, coefs_path, _ = Lasso(
-            alpha=alphas[0],  # placeholder
-            fit_intercept=False,
-            max_iter=1,  # just to get the path
-            warm_start=True
-        ).path(X_tr, y_tr, alphas=alphas)
+        # Parallelize alpha evaluation across all alphas
+        def _eval_alpha(alpha_idx):
+            preds = loo_fits_va @ coefs_path[:, alpha_idx]
+            mse = float(np.mean((y_va - preds) ** 2))
+            nnz = int(np.sum(coefs_path[:, alpha_idx] != 0))
+            return alpha_idx, mse, nnz
 
-        # Actually, let's use a simpler approach - fit on full path
-        lasso_refit = Lasso(fit_intercept=False, max_iter=5000, tol=1e-7, random_state=seed)
-        lasso_refit.fit(X_tr, y_tr)
+        alpha_results = Parallel(n_jobs=n_jobs, verbose=0)(
+            delayed(_eval_alpha)(ai) for ai in range(len(alphas))
+        )
 
-        # Get predictions for all alphas using the path
-        # For simplicity, let's just compute MSE for each alpha manually
-        for alpha_idx, alpha in enumerate(alphas):
-            lasso_tmp = Lasso(alpha=alpha, fit_intercept=False, max_iter=5000, tol=1e-7, random_state=seed)
-            lasso_tmp.fit(X_tr, y_tr)
-            y_pred = lasso_tmp.predict(X_va)
-            mse_path[alpha_idx, fold_idx] = np.mean((y_va - y_pred) ** 2)
-            n_nonzero_path[alpha_idx, fold_idx] = np.sum(lasso_tmp.coef_ != 0)
+        n_alphas = len(alphas)
+        mse_fold = np.zeros(n_alphas)
+        nnz_fold = np.zeros(n_alphas)
+        for alpha_idx, mse, nnz in alpha_results:
+            mse_fold[alpha_idx] = mse
+            nnz_fold[alpha_idx] = nnz
+
+        return fold_idx, mse_fold, nnz_fold
+
+    # Execute folds in parallel
+    parallel_results = Parallel(n_jobs=n_jobs, verbose=0)(
+        delayed(_compute_fold_errors)(fold_idx, train_idx, val_idx)
+        for fold_idx, (train_idx, val_idx) in enumerate(cv_splits)
+    )
+
+    # Collect results into arrays
+    mse_path = np.full((len(alphas), n_folds), np.inf)
+    n_nonzero_path = np.zeros((len(alphas), n_folds))
+    for fold_idx, mse_fold, nnz_fold in parallel_results:
+        mse_path[:, fold_idx] = mse_fold
+        n_nonzero_path[:, fold_idx] = nnz_fold
 
     # Compute mean MSE across folds
     mean_mse = np.mean(mse_path, axis=1)
@@ -1107,7 +1132,7 @@ def cv_unilasso_with_splits(
     scaler_final = StandardScaler()
     loo_fits_final = scaler_final.fit_transform(loo_fits)
 
-    lasso_final = Lasso(alpha=best_alpha, fit_intercept=fit_intercept, max_iter=5000, tol=1e-7, random_state=seed)
+    lasso_final = Lasso(alpha=best_alpha, fit_intercept=fit_intercept, max_iter=10000, tol=1e-7, random_state=seed)
     lasso_final.fit(loo_fits_final, y)
 
     # Get coefficients in original scale
@@ -1118,10 +1143,17 @@ def cv_unilasso_with_splits(
     if fit_intercept:
         gamma_0 = gamma_0 - np.sum(scaler_final.mean_ * gamma_hat)
 
-    # Format output
-    gamma_hat, gamma_0, beta_coefs = _format_output(
-        lasso_final, beta_coefs_fit, beta_intercepts, zero_var_idx, X, fit_intercept
-    )
+    # In the sklearn Lasso path, _format_output cannot be used because it expects
+    # an ad.grpnet object (lasso_model.betas.toarray()). The gamma_hat computed
+    # above is already the final coefficient in the original feature space.
+    # Preserve the prior signs from univariate regression for sign accuracy computation.
+    if zero_var_idx is not None and len(zero_var_idx) > 0:
+        total_num_var = X.shape[1]
+        beta_coefs = np.zeros(total_num_var)
+        pos_var_idx = np.setdiff1d(np.arange(total_num_var), zero_var_idx)
+        beta_coefs[pos_var_idx] = beta_coefs_fit.squeeze()
+    else:
+        beta_coefs = beta_coefs_fit.squeeze()
 
     unilasso_result = UniLassoCVResult(
         coefs=gamma_hat,

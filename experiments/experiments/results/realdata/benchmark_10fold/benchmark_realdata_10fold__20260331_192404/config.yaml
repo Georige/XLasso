@@ -1,0 +1,75 @@
+experiment: benchmark_realdata_10fold
+dataset: riboflavin
+algo: pfl_regressor_cv,adaptive_lasso_cv,elasticnet_1se,relaxed_lasso_1se,lasso_cv
+mode: random
+window_size: 120
+n_iter: 2
+train_ratio: 0.8
+seed_base: 42
+cv_folds: 3
+output_dir: experiments/results/realdata/benchmark_10fold
+compare_models:
+- algo: pfl_regressor_cv
+  display: PFL (Pure Flipped Lasso, CV-tuned)
+  params:
+    cv: 3
+    lambda_ridge_list:
+    - 0.1
+    - 1.0
+    - 10.0
+    - 100.0
+    alpha_min_ratio: 0.0001
+    n_alpha: 100
+    max_iter: 10000
+    tol: 0.0001
+    random_state: 2026
+- algo: adaptive_lasso_cv
+  display: AdaptiveLassoCV
+  params:
+    alphas:
+    - 0.001
+    - 0.01
+    - 0.1
+    - 1.0
+    gammas:
+    - 0.5
+    - 1.0
+    - 2.0
+    cv: 3
+    max_iter: 5000
+- algo: elasticnet_1se
+  display: ElasticNet (1-SE rule)
+  params:
+    cv_folds: 3
+    l1_ratios:
+    - 0.1
+    - 0.5
+    - 0.7
+    - 0.9
+    - 0.95
+    - 0.99
+    - 1.0
+    max_iter: 5000
+    random_state: 42
+- algo: relaxed_lasso_1se
+  display: RelaxedLasso (1-SE rule)
+  params:
+    cv: 3
+    random_state: 42
+    eps: 0.001
+    n_alphas: 100
+- algo: lasso_cv
+  display: LassoCV
+  params:
+    alphas:
+    - 0.0001
+    - 0.001
+    - 0.01
+    - 0.1
+    - 1.0
+    cv: 3
+    max_iter: 20000
+    random_state: 42
+preprocess:
+  method: standard
+description: Compare 6 Lasso variants on riboflavin with 10-fold CV

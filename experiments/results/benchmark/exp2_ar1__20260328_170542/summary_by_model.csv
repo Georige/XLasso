@@ -1,2 +1,0 @@
-model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std,sparsity_mean,sparsity_std,n_selected_mean,n_selected_std
-AFL-CV-1SE,0.7312,0.2444,33.56,48.7892,0.764,0.3022,0.2667,0.1721,0.7333,0.1721,0.764,0.3022,0.7693,0.2807,0.9591,0.0112,20.444,5.5767

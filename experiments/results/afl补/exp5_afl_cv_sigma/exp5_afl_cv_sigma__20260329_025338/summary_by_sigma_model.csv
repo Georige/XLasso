@@ -1,2 +1,0 @@
-sigma,snr,model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std
-1.0,1.0,AdaptiveFlippedLassoCV,0.004,0.0068,1.5442,0.4597,0.004,0.007,0.5356,0.2278,0.0044,0.0077,0.004,0.007,-0.5425,0.4261

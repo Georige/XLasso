@@ -1,3 +1,0 @@
-model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std,sparsity_mean,sparsity_std,n_selected_mean,n_selected_std
-AFL-CV-1SE,0.8933,0.0915,3.0809,4.1863,0.9725,0.0655,0.1674,0.1173,0.8326,0.1173,0.9725,0.0655,0.9621,0.0501,0.9523,0.0055,23.84,2.7255
-AdaptiveLassoCV-1SE,0.8049,0.14,68.2899,3.801,0.7263,0.1712,0.0713,0.0872,0.9287,0.0872,0.7263,0.1712,0.1431,0.0204,0.9689,0.0055,15.535,2.7699

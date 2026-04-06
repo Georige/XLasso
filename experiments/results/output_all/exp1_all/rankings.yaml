@@ -1,0 +1,76 @@
+by_f1:
+  rank_1:
+    model: PFLRegressorCV (BAFL, gamma=1.0, cap=10.0)
+    f1: 0.8689
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    f1: 0.6156
+  rank_3:
+    model: RelaxedLassoCV
+    f1: 0.4721
+  rank_4:
+    model: ElasticNetCV
+    f1: 0.4638
+  rank_5:
+    model: LassoCV
+    f1: 0.4589
+  rank_6:
+    model: UnilassoCV
+    f1: 0.4294
+by_mse:
+  rank_1:
+    model: RelaxedLassoCV
+    mse: 5.0274
+  rank_2:
+    model: LassoCV
+    mse: 5.1444
+  rank_3:
+    model: UnilassoCV
+    mse: 5.2966
+  rank_4:
+    model: ElasticNetCV
+    mse: 5.467
+  rank_5:
+    model: PFLRegressorCV (BAFL, gamma=1.0, cap=10.0)
+    mse: 5.554
+  rank_6:
+    model: AdaptiveLassoCV (fixed)
+    mse: 7.6863
+by_fdr:
+  rank_1:
+    model: PFLRegressorCV (BAFL, gamma=1.0, cap=10.0)
+    fdr: 0.1908
+  rank_2:
+    model: AdaptiveLassoCV (fixed)
+    fdr: 0.4509
+  rank_3:
+    model: RelaxedLassoCV
+    fdr: 0.689
+  rank_4:
+    model: ElasticNetCV
+    fdr: 0.6964
+  rank_5:
+    model: LassoCV
+    fdr: 0.7012
+  rank_6:
+    model: UnilassoCV
+    fdr: 0.7258
+by_tpr:
+  rank_1:
+    model: UnilassoCV
+    tpr: 0.995
+  rank_2:
+    model: LassoCV
+    tpr: 0.9938
+  rank_3:
+    model: ElasticNetCV
+    tpr: 0.9912
+  rank_4:
+    model: RelaxedLassoCV
+    tpr: 0.985
+  rank_5:
+    model: AdaptiveLassoCV (fixed)
+    tpr: 0.9556
+  rank_6:
+    model: PFLRegressorCV (BAFL, gamma=1.0, cap=10.0)
+    tpr: 0.955

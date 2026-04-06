@@ -1,0 +1,59 @@
+experiment: exp7_pfl_vs_adaptive
+description: 'Exp7 sigma sensitivity: PFLRegressorCV (BAFL) vs AdaptiveLassoCV, 5
+  repeats'
+algo: pfl_regressor_cv
+n_samples: 300
+n_features: 500
+n_nonzero: 20
+correlation_type: experiment7
+rho: 0.9
+family: gaussian
+random_state: 42
+n_repeats: 20
+cv_folds: 5
+n_jobs: -1
+primary_metric: f1
+max_iter: 10000
+search_space:
+  sigma:
+  - 0.5
+  - 1.0
+  - 2.0
+  - 3.0
+compare_models:
+- algo: pfl_regressor_cv
+  display: PFLRegressorCV (BAFL, gamma=1.0, cap=10.0)
+  cv: true
+  params:
+    fallback_min_nonzero: 10
+  lambda_ridge_list:
+  - 0.1
+  - 1.0
+  - 10.0
+  - 100.0
+  gamma: 1.0
+  weight_cap: 10.0
+  alpha_min_ratio: 0.0001
+  n_alpha: 100
+  max_iter: 10000
+  tol: 0.0001
+  standardize: true
+  fit_intercept: true
+- algo: adaptive_lasso_cv
+  display: AdaptiveLassoCV (fixed)
+  cv: true
+- algo: lasso_cv
+  display: LassoCV
+  cv: true
+- algo: unilasso_cv
+  display: UnilassoCV
+  cv: true
+- algo: relaxed_lasso_1se
+  display: RelaxedLassoCV
+  cv: true
+output_dir: ./experiments/results/exp7_pfl_vs_adaptive
+sigma: 1.0
+lambda_1: 0.01
+lambda_2: 0.01
+group_threshold: 0.7
+config_path: experiments/configs/exp7_afl_cv_sigma.yaml

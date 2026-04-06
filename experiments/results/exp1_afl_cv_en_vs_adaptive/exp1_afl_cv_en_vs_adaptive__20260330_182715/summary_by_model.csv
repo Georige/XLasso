@@ -1,3 +1,0 @@
-model,f1_mean,f1_std,mse_mean,mse_std,tpr_mean,tpr_std,fdr_mean,fdr_std,precision_mean,precision_std,recall_mean,recall_std,r2_mean,r2_std,sparsity_mean,sparsity_std,n_selected_mean,n_selected_std
-AFL-CV-EN (ElasticNet),0.6627,0.3632,40.5453,55.9096,0.75,0.3606,0.3822,0.3722,0.6178,0.3722,0.75,0.3606,0.862,0.1842,0.9404,0.0277,29.8,13.8265
-AdaptiveLassoCV (fixed),0.6345,0.3486,41.2379,56.5522,0.72,0.399,0.4078,0.3296,0.5922,0.3296,0.72,0.399,0.8589,0.1879,0.9512,0.0212,24.4,10.5951

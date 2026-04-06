@@ -19,7 +19,7 @@ preprocess:
 # Compare models
 compare_models:
   - algo: pfl_regressor_cv
-    display: PFLRegressorCV (BAFL, gamma=1.0, cap=10.0)
+    display: CG-Lasso
     params:
       cv: 10
       lambda_ridge_list: [0.1, 1.0, 10.0, 100.0]
