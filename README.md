@@ -157,6 +157,157 @@ XLasso/
 
 ---
 
+## 可视化脚本使用
+
+实验结果位于 `experiments/results/output_all/` 目录下，可使用以下脚本进行可视化：
+
+### 1. plot_metrics_bar.py — 柱状图
+
+绘制模拟实验的柱状图，支持分组对比。
+
+```bash
+# 基本用法：绘制 exp1 的 F1 柱状图
+python experiments/factory/plot_metrics_bar.py --exp 1 --metric f1
+
+# 按 sigma 分组
+python experiments/factory/plot_metrics_bar.py --exp 1 --metric f1 --group-by sigma
+
+# 分组柱状图：X轴为 SNR，每个 SNR 下显示各模型
+python experiments/factory/plot_metrics_bar.py --exp 1 --metric f1 --x-axis snr --hue model
+
+# 双指标图：F1 向上 + MSE 向下（共用 Y 轴）
+python experiments/factory/plot_metrics_bar.py --exp 1 --metric f1 --x-axis snr --hue model --metric2 mse
+
+# 绘制所有指标网格图
+python experiments/factory/plot_metrics_bar.py --exp 1 --metric all
+
+# 指定输出路径
+python experiments/factory/plot_metrics_bar.py --exp 1 --metric f1 -o ./plots/f1_bar.pdf
+
+# 使用已有数据：exp6 结果目录
+python experiments/factory/plot_metrics_bar.py --exp 6 --metric f1 --x-axis snr --hue model
+```
+
+**参数说明：**
+- `--exp`: 实验编号 (1-7)
+- `--metric`: 指标类型：`f1`, `tpr`, `fdr`, `precision`, `recall`, `sparsity`, `mse`, `r2`, `all`
+- `--group-by`: 分组变量：`model`, `sigma`, `snr`
+- `--x-axis` + `--hue`: 分组柱状图，X轴变量和组内分组变量
+- `--metric2`: 第二指标（绘制在 Y 轴负半轴）
+
+---
+
+### 2. plot_metrics_scatter.py — 散点图
+
+绘制各算法在不同 SNR 下的散点分布图。
+
+```bash
+# 基本用法：绘制 exp1 的 F1 散点图
+python experiments/factory/plot_metrics_scatter.py --exp 1 --metric f1
+
+# 绘制所有指标网格图
+python experiments/factory/plot_metrics_scatter.py --exp 1 --metric all
+
+# 调整散点抖动和透明度
+python experiments/factory/plot_metrics_scatter.py --exp 1 --metric f1 --jitter 0.05 --alpha 0.8
+
+# 使用已有数据：exp6 结果目录
+python experiments/factory/plot_metrics_scatter.py --exp 6 --metric f1
+```
+
+**参数说明：**
+- `--exp`: 实验编号 (1-7)
+- `--metric`: 指标类型
+- `--jitter`: X轴抖动量（默认 0.15）
+- `--alpha`: 散点透明度（默认 0.6）
+- `--marker-size`: 散点大小（默认 80）
+
+---
+
+### 3. plot_bafl_path.py — 系数路径图
+
+生成 BAFL 系数路径图，展示正则化参数变化时系数的变化过程。
+
+```bash
+# 基本用法：绘制 exp6 的系数路径
+python experiments/factory/plot_bafl_path.py --exp 6 --seed 42
+
+# 绘制 CV 误差路径
+python experiments/factory/plot_bafl_path.py --exp 6 --seed 42 --plot cv_error
+
+# 同时绘制系数路径和 CV 误差路径
+python experiments/factory/plot_bafl_path.py --exp 6 --seed 42 --plot both
+
+# 自定义参数
+python experiments/factory/plot_bafl_path.py --exp 6 --seed 42 --n-alphas 200 --cv-folds 10 --gamma 1.5
+
+# 使用已有数据：指定输出目录
+python experiments/factory/plot_bafl_path.py --exp 6 --seed 42 -o ./plots/bafl_path_exp6.pdf
+```
+
+**参数说明：**
+- `--exp`: 实验编号 (1-7)
+- `--seed`: 随机种子
+- `--plot`: 图表类型：`coef`（系数路径）、`cv_error`（CV误差路径）、`both`
+- `--gamma`: BAFL 权重指数（默认 1.0）
+- `--n-alphas`: 正则化参数点数量（默认 100）
+- `--cv-folds`: 交叉验证折数（默认 5）
+- `--family`: 响应类型：`gaussian`（回归）或 `binomial`（分类）
+- `--no-1se`: 跳过 1-SE 最优线
+
+---
+
+### 4. plot_ablation.py — 参数消融热力图
+
+绘制 BAFL 参数消融实验的热力图和边际效应图。
+
+```bash
+# 基本用法：指定消融结果目录
+python experiments/factory/plot_ablation.py --input /Users/apple/Downloads/CG-Lasso/experiments/results/output_all/bafl_ablation
+
+# 指定输出目录
+python experiments/factory/plot_ablation.py --input /Users/apple/Downloads/CG-Lasso/experiments/results/output_all/bafl_ablation -o ./plots/ablation/
+
+# 自定义文件名前缀
+python experiments/factory/plot_ablation.py --input /Users/apple/Downloads/CG-Lasso/experiments/results/output_all/bafl_ablation -p my_ablation
+```
+
+**输出图表：**
+- `*f1_heatmap.pdf` — F1 热力图
+- `*mse_heatmap.pdf` — MSE 热力图
+- `*fdr_heatmap.pdf` — FDR 热力图
+- `*tpr_heatmap.pdf` — TPR 热力图
+- `*gamma_marginal.pdf` — gamma 边际效应图
+- `*cap_marginal.pdf` — cap 边际效应图
+- `*rank_heatmap.pdf` — 排名热力图
+- `*profile_gamma10.pdf` — 固定 gamma=1.0 的剖面图
+- `*gamma_convergence.pdf` — gamma 收敛图
+
+---
+
+### 5. plot_realdata.py — 真实数据可视化
+
+绘制真实数据实验结果的 MSE/模型大小柱状图和特征选择频率图。
+
+```bash
+# 基本用法：使用默认目录
+python experiments/factory/plot_realdata.py
+
+# 指定数据目录
+python experiments/factory/plot_realdata.py --input /Users/apple/Downloads/CG-Lasso/experiments/results/output_all/realdata
+
+# 指定输出目录
+python experiments/factory/plot_realdata.py --input /Users/apple/Downloads/CG-Lasso/experiments/results/output_all/realdata -o ./plots/realdata/
+```
+
+**输出图表：**
+- `realdata_metrics_mse.pdf` — MSE 柱状图
+- `realdata_metrics_size_scatter.pdf` — 模型大小散点+柱状图
+- `realdata_selection_frequency.pdf` — 特征选择频率图
+- `realdata_consensus_heatmap_<algo>.pdf` — 各算法的共识热力图
+
+---
+
 ## 引用
 
 如果你在研究中使用了本框架，请引用：
